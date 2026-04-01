@@ -1,0 +1,7 @@
+README.md
+setup.py
+Documind.egg-info/PKG-INFO
+Documind.egg-info/SOURCES.txt
+Documind.egg-info/dependency_links.txt
+Documind.egg-info/requires.txt
+Documind.egg-info/top_level.txt

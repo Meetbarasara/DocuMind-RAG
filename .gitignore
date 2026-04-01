@@ -1,0 +1,47 @@
+venv/
+.env
+.__pycache__/
+*.pyc
+.logs/
+# ===============================
+# Logs
+# ===============================
+logs/
+*.log
+
+# ===============================
+# Python artifacts
+# ===============================
+__pycache__/
+*.py[cod]
+
+# ===============================
+# Virtual environments
+# ===============================
+venv/
+.env
+
+# ===============================
+# OS / Editor
+# ===============================
+.DS_Store
+.vscode/
+
+docquery.egg-info/
+
+# Vector databases
+vector_db/
+chroma/
+*.chroma/
+
+# DocQuery caches
+*.pkl
+*.docs.pkl
+
+pyproject.toml
+test_pipeline.py
+improve.txt
+production_audit.md
+
+
+*.ipynb
