@@ -20,9 +20,15 @@ def error_message_detail(error, error_detail: sys) -> str:
 class CustomException(Exception):
     """Application-level exception with enriched traceback info."""
 
-    def __init__(self, error_message, error_detail: sys):
+    def __init__(self, error_message, error_detail: sys = None):
         super().__init__(error_message)
-        self.error_message = error_message_detail(error_message, error_detail)
+        # Use provided sys module or fall back to the imported one
+        _sys = error_detail if error_detail is not None else sys
+        try:
+            self.error_message = error_message_detail(error_message, _sys)
+        except (TypeError, AttributeError):
+            # If no active traceback exists, just use the plain message
+            self.error_message = str(error_message)
 
     def __str__(self):
         return self.error_message

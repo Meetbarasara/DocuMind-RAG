@@ -1,6 +1,7 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List
 
 from dotenv import load_dotenv
 
@@ -29,11 +30,21 @@ class Config:
     SIMILARITY_THRESHOLD: float = 0.30
     USE_HYBRID_SEARCH: bool = False          # wired up later
 
+    # ── Generation parameters ─────────────────────────────────────────
+    LLM_TEMPERATURE: float = 0.1
+    LLM_MAX_TOKENS: int = 2048
+    STREAMING: bool = True
+
+    # ── Embedding parameters ──────────────────────────────────────────
+    EMBEDDING_BATCH_SIZE: int = 100
+
     # ── API keys & services ───────────────────────────────────────────
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
 
     SUPABASE_URL: str = os.getenv("SUPABASE_URL")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")
+    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    SUPABASE_STORAGE_BUCKET: str = "documents"
 
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY")
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "documind")
@@ -45,3 +56,8 @@ class Config:
     SUPPORTED_FILE_TYPES: tuple = (
         "pdf", "docx", "pptx", "txt", "xlsx", "csv", "html",
     )
+
+    # ── API server settings ───────────────────────────────────────────
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 8000
+    CORS_ORIGINS: List[str] = field(default_factory=lambda: ["http://localhost:8501"])

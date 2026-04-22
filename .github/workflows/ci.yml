@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install lint dependencies
+        run: pip install ruff pyflakes
+
+      - name: Ruff lint (style + import order)
+        run: ruff check src/ frontend/ --select E,F,I --ignore E501
+
+      - name: Pyflakes (undefined names)
+        run: python -m pyflakes src/ frontend/
+
+  # ────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+
+    env:
+      # Fake keys so modules that read Config() at import time don't crash.
+      # Real secrets are NOT needed for unit tests (all external calls are mocked).
+      OPENAI_API_KEY: sk-fake-openai-key-for-ci
+      PINECONE_API_KEY: fake-pinecone-key
+      PINECONE_INDEX_NAME: documind
+      SUPABASE_URL: https://fake.supabase.co
+      SUPABASE_ANON_KEY: fake-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: fake-service-role-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Install the package in editable mode so `from src.*` works
+          pip install -e ".[dev]" || pip install -e .
+          # Core runtime deps (lightweight subset — no heavy ML models in CI)
+          pip install \
+            fastapi uvicorn httpx pydantic[email] python-multipart python-dotenv \
+            langchain langchain-openai langchain-pinecone langchain-core \
+            openai tiktoken \
+            pytest pytest-asyncio pytest-mock \
+            streamlit
+
+      - name: Syntax check (all Python files)
+        run: |
+          python -c "
+          import py_compile, sys, pathlib
+          files = list(pathlib.Path('src').rglob('*.py')) + list(pathlib.Path('frontend').rglob('*.py'))
+          errors = []
+          for f in files:
+              try:
+                  py_compile.compile(str(f), doraise=True)
+              except py_compile.PyCompileError as e:
+                  print(f'ERR {f}: {e}')
+                  errors.append(f)
+          if errors:
+              sys.exit(1)
+          print(f'All {len(files)} files OK')
+          "
+
+      - name: Run unit tests
+        run: |
+          # Run tests if the tests/ directory exists and has test files
+          if [ -d "tests" ] && find tests -name 'test_*.py' | grep -q .; then
+            pytest tests/ -v --tb=short
+          else
+            echo "No test files found yet — skipping pytest."
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  api-import-check:
+    name: FastAPI App Import Check
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+
+    env:
+      OPENAI_API_KEY: sk-fake-openai-key-for-ci
+      PINECONE_API_KEY: fake-pinecone-key
+      PINECONE_INDEX_NAME: documind
+      SUPABASE_URL: https://fake.supabase.co
+      SUPABASE_ANON_KEY: fake-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: fake-service-role-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install API dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e . || true
+          pip install \
+            fastapi uvicorn httpx pydantic[email] python-multipart python-dotenv \
+            langchain langchain-openai langchain-pinecone langchain-core \
+            openai tiktoken supabase
+
+      - name: Verify FastAPI app imports without errors
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          # Import config and routers — will fail if there are import-time errors
+          from src.components.config import Config
+          from src.api.router import auth, chat, documents
+          print('All API modules imported successfully')
+          "
