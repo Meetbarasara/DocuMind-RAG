@@ -42,15 +42,15 @@ class EvaluationManager:
     @staticmethod
     def _check_ragas() -> bool:
         """Return True if the ``ragas`` package is importable."""
-        try:
-            import ragas  # noqa: F401
-            return True
-        except ImportError:
+        import importlib.util
+
+        available = importlib.util.find_spec("ragas") is not None
+        if not available:
             logger.warning(
                 "ragas is not installed — EvaluationManager will return empty results. "
                 "Install it with: pip install ragas"
             )
-            return False
+        return available
 
     def _get_metrics(self, include_recall: bool):
         """Return the list of RAGAS metric objects to use."""
