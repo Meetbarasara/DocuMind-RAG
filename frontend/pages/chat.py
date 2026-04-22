@@ -1,6 +1,5 @@
 """frontend/pages/chat.py — Main chat interface for DocuMind."""
 
-import json
 from typing import Dict, List, Optional
 
 import streamlit as st
@@ -12,7 +11,6 @@ from frontend.utils import (
     format_file_size,
     show_error,
 )
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Helpers

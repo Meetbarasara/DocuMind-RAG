@@ -8,11 +8,9 @@ Provides:
   - ``EvaluationManager.evaluate_batch`` — list of Q&A pairs
 """
 
-import sys
 from typing import Any, Dict, List, Optional
 
 from src.components.config import Config
-from src.exception import CustomException
 from src.logger import get_logger
 
 logger = get_logger(__name__)

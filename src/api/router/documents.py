@@ -6,10 +6,7 @@ Endpoints:
     DELETE /api/documents/{filename}    — delete from storage + Pinecone
 """
 
-import os
-import tempfile
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 

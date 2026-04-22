@@ -2,7 +2,12 @@
 
 import streamlit as st
 
-from frontend.utils import api_login, api_signup, init_session_state, show_error, show_success
+from frontend.utils import (
+    api_login,
+    api_signup,
+    show_error,
+    show_success,
+)
 
 
 def render_login_page() -> None:

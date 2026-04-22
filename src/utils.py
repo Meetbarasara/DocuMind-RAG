@@ -1,7 +1,6 @@
 import hashlib
-from typing import List, Optional
 from collections import Counter
-
+from typing import List, Optional
 
 # ── Element Introspection Helpers ──────────────────────────────────────────
 

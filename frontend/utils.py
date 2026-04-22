@@ -1,7 +1,7 @@
 """frontend/utils.py — API client + session state helpers for DocuMind Streamlit UI."""
 
 import json
-from typing import Any, Dict, Generator, List, Optional
+from typing import Dict, Generator, List, Optional
 
 import httpx
 import streamlit as st

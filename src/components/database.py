@@ -6,8 +6,6 @@ Provides:
   - File metadata persistence in the ``user_documents`` Supabase table
 """
 
-import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -190,7 +188,6 @@ class SupabaseManager:
             file_bytes = self.service_client.storage.from_(self._bucket).download(storage_path)
 
             # Write to a deterministic temp path so callers can clean up
-            suffix = Path(filename).suffix
             tmp_dir = Path(self.config.UPLOAD_DIR)
             tmp_dir.mkdir(parents=True, exist_ok=True)
             tmp_path = tmp_dir / filename

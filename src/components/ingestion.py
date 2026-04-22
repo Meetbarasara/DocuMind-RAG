@@ -1,9 +1,11 @@
 import sys
-from typing import List
 from pathlib import Path
+from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from langchain_core.documents import Document
+from unstructured.chunking.title import chunk_by_title
 from unstructured.partition.csv import partition_csv
 from unstructured.partition.docx import partition_docx
 from unstructured.partition.email import partition_email
@@ -12,22 +14,19 @@ from unstructured.partition.json import partition_json
 from unstructured.partition.pdf import partition_pdf
 from unstructured.partition.pptx import partition_pptx
 from unstructured.partition.text import partition_text
-from unstructured.partition.xml import partition_xml
 from unstructured.partition.xlsx import partition_xlsx
-from unstructured.chunking.title import chunk_by_title
-
-from langchain_core.documents import Document
+from unstructured.partition.xml import partition_xml
 
 from src.utils import (
-    _log_elements_analysis,
-    _get_element_type,
-    _element_has_image_payload,
-    _table_html,
-    _create_table_description,
     _create_image_description,
-    _stable_id,
-    _get_page_number,
+    _create_table_description,
+    _element_has_image_payload,
+    _get_element_type,
     _get_metadata_fields,
+    _get_page_number,
+    _log_elements_analysis,
+    _stable_id,
+    _table_html,
 )
 
 try:

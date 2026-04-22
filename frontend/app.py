@@ -6,15 +6,14 @@ Run with:
 import sys
 from pathlib import Path
 
-# Ensure the project root (e.g. e:/Desktop/DocuMind) is on sys.path so that
-# both `from frontend.*` and `from src.*` imports resolve correctly when
-# Streamlit is invoked from any working directory.
+import streamlit as st
+
+# Ensure the project root is on sys.path so `from frontend.*` and
+# `from src.*` imports resolve correctly when Streamlit runs this file.
 _PROJECT_ROOT = str(Path(__file__).parent.parent.resolve())
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-
-import streamlit as st
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
@@ -24,11 +23,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Import after set_page_config
-from frontend.pages.chat import render_chat_page
-from frontend.pages.documents import render_documents_page
-from frontend.pages.login import render_login_page
-from frontend.utils import api_logout, init_session_state, is_authenticated
+# These imports must come after set_page_config so page modules don't
+# trigger their own Streamlit initialisation before ours.
+from frontend.pages.chat import render_chat_page  # noqa: E402
+from frontend.pages.documents import render_documents_page  # noqa: E402
+from frontend.pages.login import render_login_page  # noqa: E402
+from frontend.utils import (  # noqa: E402
+    api_logout,
+    init_session_state,
+    is_authenticated,
+)
 
 # ── Initialise session state ──────────────────────────────────────────────────
 init_session_state()
