@@ -35,6 +35,11 @@ class Config:
     LLM_MAX_TOKENS: int = 2048
     STREAMING: bool = True
 
+    # ── PDF parsing strategy ──────────────────────────────────────────
+    # "fast"   = pdfminer text extraction (~2-5s per PDF, text-only)
+    # "hi_res" = ML layout detection (~120-200s on CPU, extracts tables+images)
+    PDF_PARSE_STRATEGY: str = os.getenv("PDF_PARSE_STRATEGY", "fast")
+
     # ── Embedding parameters ──────────────────────────────────────────
     EMBEDDING_BATCH_SIZE: int = 100
 

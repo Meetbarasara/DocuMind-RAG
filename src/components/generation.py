@@ -65,7 +65,7 @@ class AnswerGeneration:
         # ── LLM ──────────────────────────────────────────────────────────
         self.llm = ChatOpenAI(
             model=self.config.LLM_MODEL_NAME,
-            temperature=0.1,
+            temperature=self.config.LLM_TEMPERATURE,
             api_key=self.config.OPENAI_API_KEY,
             request_timeout=30,
         )

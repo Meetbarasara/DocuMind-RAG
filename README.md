@@ -146,7 +146,8 @@ DocuMind/
 │   │   └── router/
 │   │       ├── auth.py        # POST /api/auth/{signup,login,logout,me}
 │   │       ├── documents.py   # POST/GET/DELETE /api/documents/
-│   │       └── chat.py        # POST /api/chat/query[/stream]
+│   │       ├── chat.py        # POST /api/chat/query[/stream]
+│   │       └── evaluate.py    # POST /api/evaluate/{single,batch}
 │   ├── logger.py              # Rotating file + stream logger
 │   ├── exception.py           # Custom exception with traceback detail
 │   └── utils.py               # Element helpers, chat history formatting
@@ -273,6 +274,13 @@ Base URL: `http://localhost:8000`
 | `POST` | `/api/chat/query` | Blocking Q&A → `{answer, sources, ...}` |
 | `POST` | `/api/chat/query/stream` | Streaming Q&A (SSE) → token-by-token |
 
+### Evaluation (RAGAS)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/evaluate/single` | Score one Q&A pair (faithfulness, relevancy, precision) |
+| `POST` | `/api/evaluate/batch` | Score a batch of Q&A pairs + return summary averages |
+
 #### Example: Query
 
 ```bash
@@ -322,6 +330,7 @@ All settings live in `src/components/config.py` and are overridable via `.env`:
 | `TOP_K` | `5` | Chunks retrieved per query |
 | `SIMILARITY_THRESHOLD` | `0.30` | Min cosine score to keep |
 | `LLM_TEMPERATURE` | `0.1` | LLM creativity (lower = more factual) |
+| `PDF_PARSE_STRATEGY` | `fast` | `fast` (~5s, text only) or `hi_res` (~2-3 min, tables + images) |
 | `EMBEDDING_BATCH_SIZE` | `100` | Vectors per Pinecone upsert batch |
 | `API_PORT` | `8000` | FastAPI server port |
 

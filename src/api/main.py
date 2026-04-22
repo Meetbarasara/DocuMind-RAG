@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.dependencies import get_config
-from src.api.router import auth, chat, documents
+from src.api.router import auth, chat, documents, evaluate
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -85,6 +85,7 @@ async def log_requests(request: Request, call_next):
 app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
+app.include_router(evaluate.router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

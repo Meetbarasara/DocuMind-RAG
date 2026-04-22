@@ -40,13 +40,7 @@ except ImportError:
 # This replaces the long if/elif chain while keeping the exact same behaviour.
 
 _PARTITION_MAP = {
-    ".pdf": lambda f: partition_pdf(
-        filename=f,
-        strategy="hi_res",
-        infer_table_structure=True,
-        extract_image_block_types=["Image"],
-        extract_image_block_to_payload=True,
-    ),
+    # PDF strategy is injected at runtime by DocumentProcessor (see _get_pdf_partitioner)
     ".docx": lambda f: partition_docx(filename=f, infer_table_structure=True),
     ".pptx": lambda f: partition_pptx(filename=f),
     ".xlsx": lambda f: partition_xlsx(filename=f),
@@ -72,6 +66,38 @@ class DocumentProcessor:
     def __init__(self, config):
         self.config = config
 
+    # ── PDF partition function (strategy depends on config) ──────────
+
+    def _get_pdf_partitioner(self):
+        """Return the appropriate PDF partitioner based on config strategy.
+
+        Strategies:
+            - ``"fast"``   — pdfminer text extraction. ~2-5 seconds per PDF.
+                             Best for text-heavy documents. **Default.**
+            - ``"hi_res"`` — ML-based layout detection (detectron2/YOLOX).
+                             ~120-200s on CPU. Use for table/image-heavy PDFs
+                             or when you have a GPU.
+            - ``"auto"``   — Uses ``fast`` unless the PDF contains images,
+                             in which case it falls back to ``hi_res``.
+        """
+        strategy = getattr(self.config, "PDF_PARSE_STRATEGY", "fast")
+
+        if strategy == "hi_res":
+            return lambda f: partition_pdf(
+                filename=f,
+                strategy="hi_res",
+                infer_table_structure=True,
+                extract_image_block_types=["Image"],
+                extract_image_block_to_payload=True,
+            )
+        else:
+            # "fast" or "auto" — use pdfminer, skip ML inference
+            return lambda f: partition_pdf(
+                filename=f,
+                strategy="fast",
+                extract_images_in_pdf=False,
+            )
+
     # ── Step 1: Parse raw file into unstructured elements ─────────────
 
     def process_documents(self, file_paths: str) -> List:
@@ -81,7 +107,11 @@ class DocumentProcessor:
         file_name = path.name
 
         try:
-            partition_fn = _PARTITION_MAP.get(extension)
+            if extension == ".pdf":
+                partition_fn = self._get_pdf_partitioner()
+            else:
+                partition_fn = _PARTITION_MAP.get(extension)
+
             if partition_fn is None:
                 raise ValueError(f"Unsupported file type: {extension}")
 

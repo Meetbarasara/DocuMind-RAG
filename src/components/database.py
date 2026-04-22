@@ -221,13 +221,16 @@ class SupabaseManager:
     def record_upload(
         self, user_id: str, filename: str, file_type: str, size_bytes: int
     ) -> Optional[Dict]:
-        """Insert a row into the ``user_documents`` metadata table.
+        """Upsert a row into the ``user_documents`` metadata table.
+
+        Uses upsert (on_conflict) so re-uploading the same file updates the
+        existing row rather than raising a unique constraint violation.
 
         Expected schema:
             user_documents(id, user_id, filename, file_type, size_bytes, uploaded_at)
 
         Returns:
-            The inserted row dict, or *None* on failure.
+            The upserted row dict, or *None* on failure.
         """
         try:
             row = {
@@ -237,11 +240,15 @@ class SupabaseManager:
                 "size_bytes": size_bytes,
                 "uploaded_at": datetime.utcnow().isoformat(),
             }
-            result = self.service_client.table("user_documents").insert(row).execute()
+            result = (
+                self.service_client.table("user_documents")
+                .upsert(row, on_conflict="user_id,filename")
+                .execute()
+            )
             logger.info("Recorded upload metadata for %s (user=%s)", filename, user_id)
             return result.data[0] if result.data else None
         except Exception as e:
-            logger.warning("record_upload metadata insert failed: %s", e)
+            logger.warning("record_upload metadata upsert failed: %s", e)
             return None
 
     def get_user_documents(self, user_id: str) -> List[Dict]:

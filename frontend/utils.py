@@ -92,7 +92,7 @@ def api_upload_document(file_bytes: bytes, filename: str, content_type: str) -> 
         f"{API_BASE}/api/documents/upload",
         headers=auth_headers(),
         files={"file": (filename, file_bytes, content_type)},
-        timeout=180.0,   # large files may take time
+        timeout=120.0,   # fast parsing ~5-10s; hi_res ~2-3 min (CPU)
     )
     resp.raise_for_status()
     return resp.json()
@@ -157,7 +157,7 @@ def api_query_stream(
             "chat_history": chat_history,
             "filename_filter": filename_filter,
         },
-        timeout=REQUEST_TIMEOUT,
+        timeout=120.0,
     ) as response:
         response.raise_for_status()
         for line in response.iter_lines():

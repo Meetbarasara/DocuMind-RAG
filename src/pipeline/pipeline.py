@@ -201,18 +201,17 @@ class RAGPipeline:
             docs = retrieval_manager.retrieve(rewritten, filename_filter=filename_filter)
 
             if not docs:
-                yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\\n\\n"
-                yield f"data: {json.dumps({'type': 'token', 'content': 'I could not find any relevant information in the uploaded documents.'})}\\n\\n"
-                yield "data: [DONE]\\n\\n"
+                yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
+                yield f"data: {json.dumps({'type': 'token', 'content': 'I could not find any relevant information in the uploaded documents.'})}\n\n"
+                yield "data: [DONE]\n\n"
                 return
 
             yield from self.generation_manager.generate_stream(rewritten, docs, chat_history)
 
         except Exception as e:
             logger.exception("pipeline.query_stream failed")
-            import json as _json
-            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\\n\\n"
-            yield "data: [DONE]\\n\\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield "data: [DONE]\n\n"
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Delete
