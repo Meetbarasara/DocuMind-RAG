@@ -36,7 +36,7 @@ class Config:
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")
 
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY")
-    PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "DocuMind")
+    PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "documind")
     PINECONE_NAMESPACE: str = ""             # must be set per-user at runtime
 
     # ── File handling ─────────────────────────────────────────────────

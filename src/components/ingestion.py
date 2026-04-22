@@ -220,7 +220,18 @@ class DocumentProcessor:
 if __name__ == "__main__":
     config = Config()
     processor = DocumentProcessor(config)
-    file_path = "./docs/Smart_Signal__Adaptive_Traffic_Signal_Control_using_Reinforcement_Learning_and_Object_Detection.pdf"
-    elements = processor.process_documents(file_path)
+
+    # Absolute path: project_root / docs / <pdf>
+    pdf_path = str(Path(__file__).parent.parent.parent / "docs" / "Smart_Signal__Adaptive_Traffic_Signal_Control_using_Reinforcement_Learning_and_Object_Detection.pdf")
+    print(f"\n{'='*60}")
+    print(f"Ingestion test — {pdf_path}")
+    print(f"{'='*60}")
+
+    elements = processor.process_documents(pdf_path)
     langchain_docs = processor.build_langchain_documents(elements)
-    print(f"Final LangChain Documents: {len(langchain_docs)}")
+
+    print(f"\nFinal LangChain Documents: {len(langchain_docs)}")
+    for i, doc in enumerate(langchain_docs[:3], 1):
+        print(f"\n  [{i}] type={doc.metadata.get('chunk_type')} | page={doc.metadata.get('page_number')}")
+        print(f"      {doc.page_content[:120]}...")
+    print("\n✅ Ingestion test complete!")
