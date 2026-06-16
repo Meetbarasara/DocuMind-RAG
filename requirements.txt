@@ -1,5 +1,5 @@
 langchain
-langchain-community
+langchain-community           # BM25Retriever for hybrid search (Feature A)
 langchain-text-splitters
 langchain-openai
 langchain-pinecone
@@ -30,5 +30,9 @@ aiofiles
 
 # Rate limiting & async file I/O
 slowapi
+
+# RAG Quality Features
+rank_bm25                     # BM25 sparse retrieval for hybrid search (Feature A)
+sentence-transformers         # CrossEncoder re-ranking model (Feature B)
 
 -e .
