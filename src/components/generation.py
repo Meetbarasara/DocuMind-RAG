@@ -268,33 +268,23 @@ class AnswerGeneration:
 
     # ── Query rewriting ───────────────────────────────────────────────────
 
-    def rewrite_query(self, query: str, chat_history: list = None) -> str:
-        """Rewrite a follow-up question into a standalone search query.
-
-        Uses conversation history to resolve pronouns and vague references
-        so the vector-DB retrieval stays accurate on multi-turn chats.
-        If there is no history, the original query is returned untouched.
-        """
+    async def rewrite_query_async(self, query: str, chat_history: list = None) -> str:
+        """Async version — can run concurrently with other async tasks."""
         if not chat_history:
             return query
-
         formatted_history = self._format_history(chat_history)
         if not formatted_history:
             return query
-
         rewrite_prompt = ChatPromptTemplate.from_messages([
             ("system", _REWRITE_SYSTEM_PROMPT),
             ("user", "Follow-up question: {question}\nStandalone query:"),
-        ])
-
+            ])
         chain = rewrite_prompt | self.llm | StrOutputParser()
-        standalone_query = chain.invoke({
+        result = await chain.ainvoke({
             "chat_history": formatted_history,
             "question": query,
-        })
-
-        logger.info("Rewrote query: '%s' → '%s'", query, standalone_query.strip())
-        return standalone_query.strip()
+            })
+        return result.strip()
 
     # ── Answer generation (blocking) ──────────────────────────────────────
 

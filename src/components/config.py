@@ -27,7 +27,7 @@ class Config:
 
     # ── Retrieval parameters ──────────────────────────────────────────
     TOP_K: int = 5
-    SIMILARITY_THRESHOLD: float = 0.30
+    SIMILARITY_THRESHOLD: float = 0.50
 
     # ── Generation parameters ─────────────────────────────────────────
     LLM_TEMPERATURE: float = 0.1

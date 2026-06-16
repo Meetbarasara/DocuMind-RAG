@@ -59,16 +59,23 @@ class EmbeddingManager:
         self,
         documents: List[Document],
         persist_directory: str = None,
+        namespace: str = None,
     ) -> PineconeVectorStore:
         """Deduplicate *documents*, embed them, and upsert into Pinecone.
 
         Args:
-            documents: List of LangChain ``Document`` objects to embed.
+            documents:         List of LangChain ``Document`` objects to embed.
             persist_directory: (unused — kept for API compatibility).
+            namespace:         Pinecone namespace to upsert into. When provided,
+                               this takes priority over ``config.PINECONE_NAMESPACE``.
+                               Always pass this explicitly to avoid race conditions
+                               when the pipeline is used as a shared singleton.
 
         Returns:
             A ``PineconeVectorStore`` instance pointing at the target index.
         """
+        # Resolve namespace: explicit arg wins, then fall back to config
+        effective_namespace = namespace if namespace is not None else self.config.PINECONE_NAMESPACE
 
         # ── Build the embedding model ────────────────────────────────────
         embedding_model = OpenAIEmbeddings(
@@ -82,7 +89,7 @@ class EmbeddingManager:
             return PineconeVectorStore(
                 index_name=self.config.PINECONE_INDEX_NAME,
                 embedding=embedding_model,
-                namespace=self.config.PINECONE_NAMESPACE,
+                namespace=effective_namespace,
             )
 
         try:
@@ -121,7 +128,7 @@ class EmbeddingManager:
             vector_store = PineconeVectorStore(
                 index_name=self.config.PINECONE_INDEX_NAME,
                 embedding=embedding_model,
-                namespace=self.config.PINECONE_NAMESPACE,
+                namespace=effective_namespace,
             )
 
             chunk_ids = [doc.metadata["chunk_id"] for doc in documents]

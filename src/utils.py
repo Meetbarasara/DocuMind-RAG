@@ -106,16 +106,16 @@ def _create_image_description(el, page_num=None) -> str:
 
 # Module-level cache for conversation summaries.
 # Keyed by hash of the older messages to avoid redundant LLM calls.
+# Replace the whole _summary_cache approach with this:
 _summary_cache: Dict[str, str] = {}
 
-
 def _hash_messages(messages: list) -> str:
-    """Create a deterministic hash of a list of message dicts."""
-    raw = "".join(
-        f"{m.get('role', '')}:{m.get('content', '')}" for m in messages
-    )
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
+    # Key by count + last message ID, not full content — 
+    # same older messages + new message should still hit the cache
+    if not messages:
+        return ""
+    raw = f"count:{len(messages)}::last:{messages[-1].get('content','')[:50]}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 def _summarize_older_messages(messages: list, llm: Any) -> str:
     """Summarize older conversation messages using an LLM.

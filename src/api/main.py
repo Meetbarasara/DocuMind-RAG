@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.dependencies import get_config
+from src.api.dependencies import get_config, get_pipeline
 from src.api.router import auth, chat, documents, evaluate
 from src.logger import get_logger
 
@@ -30,8 +30,12 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup / shutdown logic."""
     logger.info("DocuMind API starting up…")
+    # Pre-load the cross-encoder so the first user query doesn't pay the load cost
+    pipeline = get_pipeline()
+    retrieval_mgr = pipeline._get_retrieval_manager("__warmup__")
+    retrieval_mgr._get_cross_encoder()  # triggers the ~22MB model download/load
+    logger.info("Cross-encoder pre-loaded.")
     yield
     logger.info("DocuMind API shutting down.")
 
