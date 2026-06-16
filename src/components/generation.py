@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Dict, List
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -50,14 +51,36 @@ Given the conversation history, rephrase the follow-up question to be a standalo
 Conversation History:
 {chat_history}"""
 
+_MULTI_QUERY_PROMPT = """\
+You are an AI assistant that generates diverse search queries for a document retrieval system.
+Given the original query, generate {count} different reformulations that capture the same intent
+from different angles. Each reformulation should use different keywords or phrasing to maximize
+recall from a vector database.
+
+Rules:
+- Each query must be on its own line
+- Do NOT number the queries
+- Do NOT add explanations
+- Each query should be a complete, standalone search query
+- Vary vocabulary, specificity, and perspective across queries
+
+Original query: {query}"""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AnswerGeneration — query rewriting, answer generation, and streaming
+#  AnswerGeneration — query rewriting, multi-query, answer generation,
+#                     citation verification, and streaming
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class AnswerGeneration:
-    """Generate grounded, cited answers from retrieved documents using an LLM."""
+    """Generate grounded, cited answers from retrieved documents using an LLM.
+
+    Enhanced with:
+        - **Multi-Query Retrieval** (Feature C): Generate diverse query variants
+        - **Citation Verification** (Feature D): Post-generation citation checking
+        - **Memory Summarization** (Feature F): Summarize older conversation turns
+    """
 
     def __init__(self, config: Config):
         self.config = config
@@ -112,6 +135,137 @@ class AnswerGeneration:
         context = "\n---\n".join(context_parts)
         return context, sources
 
+    # ── Helper: Format history with Feature F ─────────────────────────────
+
+    def _format_history(self, chat_history: list) -> str:
+        """Format chat history with optional memory summarization (Feature F)."""
+        if not chat_history:
+            return ""
+        return format_chat_history(
+            chat_history,
+            llm=self.llm if self.config.USE_MEMORY_SUMMARIZATION else None,
+            use_summarization=self.config.USE_MEMORY_SUMMARIZATION,
+        )
+
+    # ── Feature C: Multi-Query Generation ─────────────────────────────────
+
+    def generate_multi_queries(self, query: str) -> List[str]:
+        """Generate diverse reformulations of *query* for multi-query retrieval.
+
+        Uses a single LLM call to produce ``config.MULTI_QUERY_COUNT`` variant
+        queries that capture the same intent from different angles.
+
+        Args:
+            query: The original (possibly rewritten) search query.
+
+        Returns:
+            List of reformulated queries (always includes the original).
+        """
+        if not self.config.USE_MULTI_QUERY:
+            return [query]
+
+        try:
+            multi_prompt = ChatPromptTemplate.from_messages([
+                ("system", _MULTI_QUERY_PROMPT),
+                ("user", "Generate the queries now."),
+            ])
+            chain = multi_prompt | self.llm | StrOutputParser()
+
+            result = chain.invoke({
+                "query": query,
+                "count": self.config.MULTI_QUERY_COUNT,
+            })
+
+            # Parse: one query per non-empty line
+            variants = [
+                line.strip()
+                for line in result.strip().split("\n")
+                if line.strip()
+            ]
+
+            # Always include the original query first
+            all_queries = [query] + [v for v in variants if v.lower() != query.lower()]
+
+            logger.info(
+                "Multi-query: generated %d variants (from original + %d new)",
+                len(all_queries), len(variants),
+            )
+            return all_queries
+
+        except Exception as e:
+            logger.warning("Multi-query generation failed, using original: %s", e)
+            return [query]
+
+    # ── Feature D: Citation Verification ──────────────────────────────────
+
+    @staticmethod
+    def _verify_citations(
+        answer: str, sources: List[Dict]
+    ) -> Dict[str, Any]:
+        """Verify that citations in the answer match retrieved sources.
+
+        Parses patterns like ``[Source: filename, Page: X]`` and
+        ``[SourceN: filename, Page: X]`` from the generated answer, then
+        checks each against the provided sources list.
+
+        Args:
+            answer:  The LLM-generated answer text.
+            sources: List of source metadata dicts from retrieval.
+
+        Returns:
+            Dict with ``verified``, ``unverified``, ``total``, and ``score``.
+        """
+        # Match patterns: [Source: file, Page: N] or [Source1: file, Page: N]
+        citation_pattern = re.compile(
+            r"\[Source\d*:\s*([^,\]]+),\s*Page:\s*([^\]]+)\]",
+            re.IGNORECASE,
+        )
+
+        citations_found = citation_pattern.findall(answer)
+
+        if not citations_found:
+            return {
+                "verified": [],
+                "unverified": [],
+                "total": 0,
+                "score": 1.0,  # No citations to verify = perfect score
+            }
+
+        # Build a lookup set from sources: (filename, page)
+        source_lookup = set()
+        for s in sources:
+            fname = str(s.get("filename", "")).strip()
+            page = str(s.get("page", "N/A")).strip()
+            source_lookup.add((fname.lower(), page.lower()))
+
+        verified = []
+        unverified = []
+
+        for cited_file, cited_page in citations_found:
+            cited_file = cited_file.strip()
+            cited_page = cited_page.strip()
+            citation_str = f"[Source: {cited_file}, Page: {cited_page}]"
+
+            if (cited_file.lower(), cited_page.lower()) in source_lookup:
+                verified.append(citation_str)
+            else:
+                unverified.append(citation_str)
+
+        total = len(verified) + len(unverified)
+        score = len(verified) / total if total > 0 else 1.0
+
+        logger.info(
+            "Citation verification: %d/%d verified (score=%.2f)",
+            len(verified), total, score,
+        )
+
+        return {
+            "verified": verified,
+            "unverified": unverified,
+            "total": total,
+            "score": score,
+        }
+
     # ── Query rewriting ───────────────────────────────────────────────────
 
     def rewrite_query(self, query: str, chat_history: list = None) -> str:
@@ -124,7 +278,7 @@ class AnswerGeneration:
         if not chat_history:
             return query
 
-        formatted_history = format_chat_history(chat_history)
+        formatted_history = self._format_history(chat_history)
         if not formatted_history:
             return query
 
@@ -153,21 +307,28 @@ class AnswerGeneration:
         """Generate a complete answer from retrieved docs (waits for full response).
 
         Returns:
-            Dict with keys ``answer``, ``sources``, and ``num_sources_used``.
+            Dict with keys ``answer``, ``sources``, ``num_sources_used``,
+            and optionally ``citation_verification`` (Feature D).
         """
         context, sources = self._build_context_and_sources(retrieved_docs)
 
         answer = self.chain.invoke({
             "context": context,
             "question": query,
-            "chat_history": format_chat_history(chat_history) if chat_history else "",
+            "chat_history": self._format_history(chat_history) if chat_history else "",
         })
 
-        return {
+        result = {
             "answer": answer,
             "sources": sources,
             "num_sources_used": len(retrieved_docs),
         }
+
+        # Feature D: Citation verification (post-generation, no latency on response)
+        if self.config.USE_CITATION_VERIFICATION:
+            result["citation_verification"] = self._verify_citations(answer, sources)
+
+        return result
 
     # ── Answer generation (streaming via SSE) ─────────────────────────────
 
@@ -182,7 +343,8 @@ class AnswerGeneration:
         Event sequence:
             1. ``type: sources``  — source metadata (sent once, up front)
             2. ``type: token``    — individual LLM tokens (many events)
-            3. ``[DONE]``         — stream terminator (always sent)
+            3. ``type: citation_verification`` — (Feature D, if enabled)
+            4. ``[DONE]``         — stream terminator (always sent)
         """
         context, sources = self._build_context_and_sources(retrieved_docs)
 
@@ -194,23 +356,30 @@ class AnswerGeneration:
         yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
 
         # 2. Stream LLM tokens
+        full_answer = ""
         stream = self.chain.stream({
             "context": context,
             "question": query,
-            "chat_history": format_chat_history(chat_history) if chat_history else "",
+            "chat_history": self._format_history(chat_history) if chat_history else "",
         })
 
         try:
             for chunk in stream:
                 text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
                 if text_chunk:
+                    full_answer += text_chunk
                     yield f"data: {json.dumps({'type': 'token', 'content': text_chunk})}\n\n"
         except Exception as e:
             logger.error("SSE stream error: %s", e)
             yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"
-        finally:
-            # 3. Always signal end-of-stream so the client never hangs
-            yield "data: [DONE]\n\n"
+
+        # 3. Citation verification (Feature D) — runs AFTER streaming, before [DONE]
+        if self.config.USE_CITATION_VERIFICATION and full_answer:
+            verification = self._verify_citations(full_answer, sources)
+            yield f"data: {json.dumps({'type': 'citation_verification', **verification})}\n\n"
+
+        # 4. Always signal end-of-stream so the client never hangs
+        yield "data: [DONE]\n\n"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

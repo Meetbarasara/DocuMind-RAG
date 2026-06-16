@@ -87,6 +87,7 @@ class EmbeddingManager:
 
         try:
             # ── Step 1: Deduplicate by content hash ──────────────────────
+            total_input = len(documents)
             unique_docs: List[Document] = []
             seen_hashes: set = set()
 
@@ -104,7 +105,7 @@ class EmbeddingManager:
             logger.info(
                 "Deduplicated: %d unique docs (from %d total)",
                 len(unique_docs),
-                len(unique_docs) + len(seen_hashes) - len(unique_docs),
+                total_input,
             )
 
             # ── Step 2: Assign a stable chunk_id per document ────────────

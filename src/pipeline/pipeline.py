@@ -122,6 +122,61 @@ class RAGPipeline:
             raise CustomException(f"Ingestion failed: {e}") from e
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  Multi-Query Retrieval Helper (Feature C)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _multi_query_retrieve(
+        self,
+        rewritten_query: str,
+        retrieval_manager: "RetrievalManager",
+        filename_filter: Optional[str] = None,
+    ) -> List:
+        """Retrieve docs using multi-query expansion (Feature C) or single query.
+
+        When ``config.USE_MULTI_QUERY`` is enabled, generates diverse
+        reformulations, retrieves for each, and merges/deduplicates results
+        by content hash.
+
+        Args:
+            rewritten_query:   The (already rewritten) standalone query.
+            retrieval_manager: The namespace-specific retrieval manager.
+            filename_filter:   Optional filename restriction.
+
+        Returns:
+            Deduplicated list of ``Document`` objects.
+        """
+        import hashlib as _hashlib
+
+        # Generate multi-query variants (returns [original] if disabled)
+        queries = self.generation_manager.generate_multi_queries(rewritten_query)
+
+        if len(queries) <= 1:
+            # Single query mode — no merging needed
+            return retrieval_manager.retrieve(
+                rewritten_query, filename_filter=filename_filter
+            )
+
+        # Retrieve for each query variant and merge
+        all_docs = []
+        seen_hashes = set()
+
+        for q in queries:
+            docs = retrieval_manager.retrieve(q, filename_filter=filename_filter)
+            for doc in docs:
+                content_hash = _hashlib.md5(
+                    doc.page_content.encode()
+                ).hexdigest()
+                if content_hash not in seen_hashes:
+                    seen_hashes.add(content_hash)
+                    all_docs.append(doc)
+
+        logger.info(
+            "Multi-query retrieval: %d queries → %d unique docs",
+            len(queries), len(all_docs),
+        )
+        return all_docs
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  Query
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -134,6 +189,9 @@ class RAGPipeline:
     ) -> Dict:
         """Retrieve → generate an answer to *question*.
 
+        Pipeline: Rewrite → Multi-Query (C) → Hybrid Retrieve (A) →
+                  Dedup (E) → Re-rank (B) → Generate → Verify Citations (D)
+
         Args:
             question:        The user's question.
             namespace:       Pinecone namespace to search.
@@ -142,7 +200,8 @@ class RAGPipeline:
 
         Returns:
             Dict with keys: ``answer``, ``sources``, ``rewritten_query``,
-            ``num_sources_used``, ``namespace``.
+            ``num_sources_used``, ``namespace``, and optionally
+            ``citation_verification``.
         """
         chat_history = chat_history or []
 
@@ -150,9 +209,11 @@ class RAGPipeline:
             # ── Step 1: Rewrite query for follow-ups ─────────────────────
             rewritten = self.generation_manager.rewrite_query(question, chat_history)
 
-            # ── Step 2: Retrieve relevant chunks ─────────────────────────
+            # ── Step 2: Retrieve (with multi-query if enabled) ───────────
             retrieval_manager = self._get_retrieval_manager(namespace)
-            docs = retrieval_manager.retrieve(rewritten, filename_filter=filename_filter)
+            docs = self._multi_query_retrieve(
+                rewritten, retrieval_manager, filename_filter
+            )
 
             if not docs:
                 logger.info("No relevant documents retrieved for query: %s", question)
@@ -188,8 +249,12 @@ class RAGPipeline:
     ):
         """Streaming variant of :meth:`query` — yields SSE events.
 
+        Pipeline: Rewrite → Multi-Query (C) → Hybrid Retrieve (A) →
+                  Dedup (E) → Re-rank (B) → Stream Generate → Verify (D)
+
         Yields:
-            SSE ``data:`` strings for sources, tokens, and ``[DONE]``.
+            SSE ``data:`` strings for sources, tokens, citation_verification,
+            and ``[DONE]``.
         """
         import json
 
@@ -198,7 +263,9 @@ class RAGPipeline:
         try:
             rewritten = self.generation_manager.rewrite_query(question, chat_history)
             retrieval_manager = self._get_retrieval_manager(namespace)
-            docs = retrieval_manager.retrieve(rewritten, filename_filter=filename_filter)
+            docs = self._multi_query_retrieve(
+                rewritten, retrieval_manager, filename_filter
+            )
 
             if not docs:
                 yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"

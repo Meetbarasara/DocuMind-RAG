@@ -6,6 +6,7 @@ from fastapi import Depends, Header, HTTPException, status
 
 from src.components.config import Config
 from src.components.database import SupabaseManager
+from src.components.evalution import EvaluationManager
 from src.pipeline.pipeline import RAGPipeline
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -35,6 +36,13 @@ def get_pipeline() -> RAGPipeline:
     if "pipeline" not in _cache:
         _cache["pipeline"] = RAGPipeline(get_config())
     return _cache["pipeline"]
+
+
+def get_eval_manager() -> EvaluationManager:
+    """Return the global :class:`EvaluationManager` instance (created once)."""
+    if "eval_manager" not in _cache:
+        _cache["eval_manager"] = EvaluationManager(get_config())
+    return _cache["eval_manager"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────

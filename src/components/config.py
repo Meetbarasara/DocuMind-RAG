@@ -28,7 +28,6 @@ class Config:
     # ── Retrieval parameters ──────────────────────────────────────────
     TOP_K: int = 5
     SIMILARITY_THRESHOLD: float = 0.30
-    USE_HYBRID_SEARCH: bool = False          # wired up later
 
     # ── Generation parameters ─────────────────────────────────────────
     LLM_TEMPERATURE: float = 0.1
@@ -42,6 +41,31 @@ class Config:
 
     # ── Embedding parameters ──────────────────────────────────────────
     EMBEDDING_BATCH_SIZE: int = 100
+
+    # ── RAG Quality Feature Flags ─────────────────────────────────────
+    # Feature A: Hybrid Search — combine BM25 keyword + dense vector search
+    USE_HYBRID_SEARCH: bool = True
+    HYBRID_SEARCH_WEIGHT: float = 0.5       # 0 = dense only, 1 = BM25 only
+
+    # Feature B: Contextual Compression / Re-ranking
+    USE_RERANKING: bool = True
+    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    RERANKER_TOP_K: int = 3                 # keep top N after re-ranking
+
+    # Feature C: Multi-Query Retrieval
+    USE_MULTI_QUERY: bool = True
+    MULTI_QUERY_COUNT: int = 3              # number of query reformulations
+
+    # Feature D: Citation Verification (post-generation)
+    USE_CITATION_VERIFICATION: bool = True
+
+    # Feature E: Chunk Overlap Deduplication at Retrieval
+    USE_CHUNK_DEDUP: bool = True
+    CHUNK_DEDUP_THRESHOLD: float = 0.85     # Jaccard similarity threshold
+
+    # Feature F: Conversation Memory Summarization
+    USE_MEMORY_SUMMARIZATION: bool = True
+    MEMORY_SUMMARIZATION_WINDOW: int = 6    # summarize after this many messages
 
     # ── API keys & services ───────────────────────────────────────────
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
@@ -66,3 +90,4 @@ class Config:
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
     CORS_ORIGINS: List[str] = field(default_factory=lambda: ["http://localhost:8501"])
+

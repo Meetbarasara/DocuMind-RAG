@@ -127,7 +127,13 @@ async def delete_document(
     user_id = str(current_user["user"].id)
 
     # ── Delete from Storage ───────────────────────────────────────────────
-    db.delete_file(user_id=user_id, filename=filename)
+    storage_deleted = db.delete_file(user_id=user_id, filename=filename)
+    if not storage_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete '{filename}' from storage. "
+                   "Metadata and vectors were NOT removed to prevent orphaned data.",
+        )
 
     # ── Delete metadata record ────────────────────────────────────────────
     db.delete_document_record(user_id=user_id, filename=filename)

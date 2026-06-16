@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 
-from src.api.dependencies import get_config, get_current_user
+from src.api.dependencies import get_current_user, get_eval_manager
 from src.components.evalution import EvaluationManager
 
 router = APIRouter(prefix="/api/evaluate", tags=["evaluation"])
@@ -33,21 +33,6 @@ class BatchEvalRequest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Module-level singleton
-# ──────────────────────────────────────────────────────────────────────────────
-
-_eval_manager: Optional[EvaluationManager] = None
-
-
-def _get_eval_manager() -> EvaluationManager:
-    """Return (and cache) the global EvaluationManager instance."""
-    global _eval_manager
-    if _eval_manager is None:
-        _eval_manager = EvaluationManager(get_config())
-    return _eval_manager
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 #  Routes
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -56,13 +41,13 @@ def _get_eval_manager() -> EvaluationManager:
 async def evaluate_single(
     payload: SingleEvalRequest,
     current_user: dict = Depends(get_current_user),
+    eval_mgr: EvaluationManager = Depends(get_eval_manager),
 ):
     """Evaluate a single Q&A pair using RAGAS metrics.
 
     Returns faithfulness, answer relevancy, context precision, and
     (if ground_truth is provided) context recall.
     """
-    eval_mgr = _get_eval_manager()
     scores = eval_mgr.evaluate_single(
         query=payload.question,
         answer=payload.answer,
@@ -76,6 +61,7 @@ async def evaluate_single(
 async def evaluate_batch(
     payload: BatchEvalRequest,
     current_user: dict = Depends(get_current_user),
+    eval_mgr: EvaluationManager = Depends(get_eval_manager),
 ):
     """Evaluate a batch of Q&A pairs using RAGAS metrics.
 
@@ -84,6 +70,6 @@ async def evaluate_batch(
 
     Returns per-row scores and aggregated summary.
     """
-    eval_mgr = _get_eval_manager()
     result = eval_mgr.evaluate_batch(payload.test_set)
     return result
+
