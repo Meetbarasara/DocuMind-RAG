@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from src.components.config import Config
 from src.components.retrieval import RetrievalManager
 from src.logger import get_logger
-from src.utils import format_chat_history
+from src.utils import format_chat_history, format_chat_history_async
 
 logger = get_logger(__name__)
 
@@ -137,11 +137,15 @@ class AnswerGeneration:
 
     # ── Helper: Format history with Feature F ─────────────────────────────
 
-    def _format_history(self, chat_history: list) -> str:
-        """Format chat history with optional memory summarization (Feature F)."""
+    async def _format_history(self, chat_history: list) -> str:
+        """Format chat history with optional async memory summarization (Feature F).
+
+        Bug 2 fix: delegates to format_chat_history_async so the LLM summary
+        call runs in a thread rather than blocking the event loop.
+        """
         if not chat_history:
             return ""
-        return format_chat_history(
+        return await format_chat_history_async(
             chat_history,
             llm=self.llm if self.config.USE_MEMORY_SUMMARIZATION else None,
             use_summarization=self.config.USE_MEMORY_SUMMARIZATION,
@@ -268,27 +272,37 @@ class AnswerGeneration:
 
     # ── Query rewriting ───────────────────────────────────────────────────
 
-    async def rewrite_query_async(self, query: str, chat_history: list = None) -> str:
-        """Async version — can run concurrently with other async tasks."""
+    async def rewrite_query(self, query: str, chat_history: list = None) -> str:
+        """Rewrite a follow-up question into a standalone search query.
+
+        Uses conversation history to resolve pronouns and vague references
+        so the vector-DB retrieval stays accurate on multi-turn chats.
+        If there is no history, the original query is returned untouched.
+        """
         if not chat_history:
             return query
-        formatted_history = self._format_history(chat_history)
+
+        formatted_history = await self._format_history(chat_history)
         if not formatted_history:
             return query
+
         rewrite_prompt = ChatPromptTemplate.from_messages([
             ("system", _REWRITE_SYSTEM_PROMPT),
             ("user", "Follow-up question: {question}\nStandalone query:"),
-            ])
+        ])
+
         chain = rewrite_prompt | self.llm | StrOutputParser()
-        result = await chain.ainvoke({
+        standalone_query = await chain.ainvoke({
             "chat_history": formatted_history,
             "question": query,
-            })
-        return result.strip()
+        })
+
+        logger.info("Rewrote query: '%s' → '%s'", query, standalone_query.strip())
+        return standalone_query.strip()
 
     # ── Answer generation (blocking) ──────────────────────────────────────
 
-    def generate(
+    async def generate(
         self,
         query: str,
         retrieved_docs: List[Document],
@@ -305,7 +319,7 @@ class AnswerGeneration:
         answer = self.chain.invoke({
             "context": context,
             "question": query,
-            "chat_history": self._format_history(chat_history) if chat_history else "",
+            "chat_history": await self._format_history(chat_history) if chat_history else "",
         })
 
         result = {
@@ -322,7 +336,7 @@ class AnswerGeneration:
 
     # ── Answer generation (streaming via SSE) ─────────────────────────────
 
-    def generate_stream(
+    async def generate_stream(
         self,
         query: str,
         retrieved_docs: List[Document],
@@ -330,11 +344,13 @@ class AnswerGeneration:
     ):
         """Yield Server-Sent Events (SSE) for real-time streaming responses.
 
+        Async generator — use with FastAPI's StreamingResponse.
+
         Event sequence:
-            1. ``type: sources``  — source metadata (sent once, up front)
-            2. ``type: token``    — individual LLM tokens (many events)
+            1. ``type: sources``               — source metadata (sent once, up front)
+            2. ``type: token``                 — individual LLM tokens (many events)
             3. ``type: citation_verification`` — (Feature D, if enabled)
-            4. ``[DONE]``         — stream terminator (always sent)
+            4. ``[DONE]``                      — stream terminator (always sent)
         """
         context, sources = self._build_context_and_sources(retrieved_docs)
 
@@ -347,10 +363,11 @@ class AnswerGeneration:
 
         # 2. Stream LLM tokens
         full_answer = ""
+        chat_history_str = await self._format_history(chat_history) if chat_history else ""
         stream = self.chain.stream({
             "context": context,
             "question": query,
-            "chat_history": self._format_history(chat_history) if chat_history else "",
+            "chat_history": chat_history_str,
         })
 
         try:
@@ -370,6 +387,7 @@ class AnswerGeneration:
 
         # 4. Always signal end-of-stream so the client never hangs
         yield "data: [DONE]\n\n"
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -107,15 +107,18 @@ class SupabaseManager:
             return None
 
     def sign_out(self, access_token: str) -> bool:
-        """Invalidate a user session.
+        """Invalidate a user session server-side.
 
         Returns:
             ``True`` on success, ``False`` otherwise.
         """
         try:
-            # Set the session so the sign-out targets the right token
-            self.client.auth.set_session(access_token, "")
-            self.client.auth.sign_out()
+            # Bug 5 fix: set_session(token, "") was passing an empty string as
+            # refresh_token, which the Supabase SDK rejects or silently ignores.
+            # The correct approach is to call sign_out() with the JWT directly
+            # so Supabase invalidates the server-side session without needing
+            # the refresh token at all.
+            self.client.auth.admin.sign_out(access_token)
             logger.info("sign_out: session invalidated")
             return True
         except Exception as e:

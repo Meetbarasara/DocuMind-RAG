@@ -102,45 +102,46 @@ def _create_image_description(el, page_num=None) -> str:
         return "Image content extracted from document."
 
 
-# ── Feature F: Conversation Memory Summarization ─────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  Feature F: Conversation Memory Summarization
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Module-level cache for conversation summaries.
-# Keyed by hash of the older messages to avoid redundant LLM calls.
-# Replace the whole _summary_cache approach with this:
+# Module-level LRU-style cache for conversation summaries.
+# Keyed by SHA-256 of the older messages — the LLM is called at most once
+# per unique set of older turns.
 _summary_cache: Dict[str, str] = {}
 
+
 def _hash_messages(messages: list) -> str:
-    # Key by count + last message ID, not full content — 
-    # same older messages + new message should still hit the cache
+    """Stable hash of a list of message dicts (used as cache key)."""
     if not messages:
         return ""
-    raw = f"count:{len(messages)}::last:{messages[-1].get('content','')[:50]}"
+    raw = f"count:{len(messages)}::last:{messages[-1].get('content', '')[:50]}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
-def _summarize_older_messages(messages: list, llm: Any) -> str:
-    """Summarize older conversation messages using an LLM.
 
-    Results are cached so the LLM is only called once per unique
-    set of older messages (~1 call every ``window`` new messages).
+def _summarize_older_messages(messages: list, llm: Any) -> str:
+    """Summarize older conversation messages using an LLM (synchronous).
+
+    Results are cached so the LLM is called at most once per unique set of
+    older messages. Always call via ``_summarize_older_messages_async`` from
+    async contexts to avoid blocking the event loop.
 
     Args:
         messages: The older messages to summarize.
-        llm: A LangChain LLM instance (e.g. ``ChatOpenAI``).
+        llm:      A LangChain LLM instance (e.g. ``ChatOpenAI``).
 
     Returns:
-        A concise summary string of the conversation so far.
+        A concise summary string, or ``""`` on failure.
     """
     if not messages:
         return ""
 
     cache_key = _hash_messages(messages)
-
-    # Return cached summary if available (0ms latency on cache hit)
     if cache_key in _summary_cache:
         logger.debug("Memory summary cache HIT")
         return _summary_cache[cache_key]
 
-    # Format older messages for the summarization prompt
     formatted = "\n".join(
         f"{'User' if m.get('role') in ('user', 'human') else 'Assistant'}: "
         f"{m.get('content', '')[:500]}"
@@ -157,25 +158,30 @@ def _summarize_older_messages(messages: list, llm: Any) -> str:
              "Do NOT include greetings or filler."),
             ("user", "{conversation}"),
         ])
-
         chain = summary_prompt | llm
         result = chain.invoke({"conversation": formatted})
-
-        # Handle both string and AIMessage return types
         summary = result.content if hasattr(result, "content") else str(result)
         summary = summary.strip()
-
-        # Cache the result
         _summary_cache[cache_key] = summary
         logger.info(
-            "Summarized %d older messages into %d chars",
-            len(messages), len(summary),
+            "Summarized %d older messages into %d chars", len(messages), len(summary)
         )
         return summary
-
     except Exception as e:
         logger.warning("Memory summarization failed, dropping older messages: %s", e)
         return ""
+
+
+async def _summarize_older_messages_async(messages: list, llm: Any) -> str:
+    """Async wrapper for memory summarization.
+
+    Bug 2 fix: the synchronous LLM call was blocking the async event loop on
+    every query with long history. Now runs via asyncio.to_thread so FastAPI's
+    async workers remain free. The result is cached so the overhead is paid at
+    most once per unique set of older messages.
+    """
+    import asyncio
+    return await asyncio.to_thread(_summarize_older_messages, messages, llm)
 
 
 # ── Chat History Formatting ───────────────────────────────────────────────
@@ -190,16 +196,16 @@ def format_chat_history(
 ) -> str:
     """Format the last *window* messages into a string for LLM prompt injection.
 
-    When *use_summarization* is True and there are more messages than *window*,
-    older messages are summarized via LLM (Feature F) and prepended, rather
-    than being silently dropped.
+    Synchronous version — does NOT run memory summarization even when
+    ``use_summarization=True`` (summarization is async; use
+    ``format_chat_history_async`` from async endpoints for that).
 
     Args:
-        chat_history: List of {"role": ..., "content": ...} dicts.
-        window: Maximum number of recent messages to retain (default 6).
-        max_tokens: Hard token ceiling — oldest messages are dropped until under budget.
-        llm: Optional LangChain LLM for summarizing older messages (Feature F).
-        use_summarization: Enable conversation memory summarization.
+        chat_history:      List of ``{"role": ..., "content": ...}`` dicts.
+        window:            Max number of recent messages to include (default 6).
+        max_tokens:        Hard token ceiling; oldest messages dropped until under budget.
+        llm:               Ignored (kept for API compatibility with async callers).
+        use_summarization: Ignored (kept for API compatibility with async callers).
 
     Returns:
         Formatted string safe to inject into an LLM prompt.
@@ -207,35 +213,78 @@ def format_chat_history(
     if not chat_history:
         return ""
 
-    # ── Feature F: Summarize older messages instead of dropping them ──
+    recent = chat_history[-window:]
+
+    def _fmt(msgs: list) -> str:
+        lines = []
+        for msg in msgs:
+            role = "User" if msg["role"] in ("user", "human") else "Assistant"
+            lines.append(f"{role}: {msg['content'][:500]}")
+        return "\n".join(lines)
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        while recent:
+            text = _fmt(recent)
+            if len(enc.encode(text)) <= max_tokens:
+                return text
+            recent = recent[1:]
+        return ""
+    except ImportError:
+        return _fmt(recent)
+
+
+async def format_chat_history_async(
+    chat_history: list,
+    window: int = 6,
+    max_tokens: int = 2000,
+    llm: Any = None,
+    use_summarization: bool = False,
+) -> str:
+    """Async version of ``format_chat_history`` with memory summarization support.
+
+    Bug 2 fix: when summarization is enabled the LLM call runs via
+    ``asyncio.to_thread`` so it never blocks the event loop.
+
+    Args:
+        chat_history:      List of ``{"role": ..., "content": ...}`` dicts.
+        window:            Max number of recent messages to include (default 6).
+        max_tokens:        Hard token ceiling.
+        llm:               LangChain LLM for summarizing older messages (Feature F).
+        use_summarization: Enable conversation memory summarization (Feature F).
+
+    Returns:
+        Formatted string safe to inject into an LLM prompt.
+    """
+    if not chat_history:
+        return ""
+
+    # ── Feature F: Summarize older messages instead of dropping them ─────
     summary_prefix = ""
     if use_summarization and llm and len(chat_history) > window:
         older_messages = chat_history[:-window]
-        summary = _summarize_older_messages(older_messages, llm)
+        summary = await _summarize_older_messages_async(older_messages, llm)
         if summary:
             summary_prefix = f"[Summary of earlier conversation]: {summary}\n\n"
 
     recent = chat_history[-window:]
 
-    def _format_messages(messages: list) -> str:
-        """Convert a list of message dicts into a single formatted string."""
+    def _fmt(msgs: list) -> str:
         lines = []
-        for msg in messages:
+        for msg in msgs:
             role = "User" if msg["role"] in ("user", "human") else "Assistant"
             lines.append(f"{role}: {msg['content'][:500]}")
         return "\n".join(lines)
 
-    # Try tiktoken-based truncation; fall back to character-based
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
-
         while recent:
-            text = summary_prefix + _format_messages(recent)
+            text = summary_prefix + _fmt(recent)
             if len(enc.encode(text)) <= max_tokens:
                 return text
-            recent = recent[1:]  # drop oldest message
-
+            recent = recent[1:]
         return summary_prefix.strip() if summary_prefix else ""
     except ImportError:
-        return summary_prefix + _format_messages(recent)
+        return summary_prefix + _fmt(recent)

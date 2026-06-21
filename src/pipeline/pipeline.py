@@ -10,6 +10,7 @@ Public API:
     RAGPipeline.delete_document(filename, namespace) → None
 """
 
+import asyncio
 import os
 from typing import Dict, List, Optional
 
@@ -172,22 +173,26 @@ class RAGPipeline:
         return all_docs
 
 
-    async def query_async(
+    async def query(
         self,
         question: str,
         namespace: str = "",
         chat_history=None,
         filename_filter=None,
-        ) -> dict:
-        import asyncio
+    ) -> dict:
+        """Retrieve → generate an answer to *question* (async).
+
+        Pipeline: Rewrite → Multi-Query (C, parallel) → Hybrid Retrieve (A) →
+                  Dedup (E) → Re-rank (B) → Generate → Verify Citations (D)
+        """
         chat_history = chat_history or []
 
         retrieval_manager = self._get_retrieval_manager(namespace)
 
-        # Step 1: Rewrite + memory summary run concurrently (both are LLM calls)
-        rewritten = await self.generation_manager.rewrite_query_async(question, chat_history)
+        # Step 1: Rewrite query (async — uses non-blocking memory summarization)
+        rewritten = await self.generation_manager.rewrite_query(question, chat_history)
 
-        # Step 2: Generate multi-query variants, then search all in parallel
+        # Step 2: Multi-query parallel Pinecone lookups
         docs = await self._multi_query_retrieve_async(rewritten, retrieval_manager, filename_filter)
 
         if not docs:
@@ -197,22 +202,27 @@ class RAGPipeline:
                 "num_sources_used": 0, "namespace": namespace,
             }
 
-        # Step 3: Generate answer (blocking call, but streaming starts immediately)
-        result = self.generation_manager.generate(rewritten, docs, chat_history)
+        # Step 3: Generate answer (awaited — async since memory summarization is async)
+        result = await self.generation_manager.generate(rewritten, docs, chat_history)
         result["rewritten_query"] = rewritten
         result["namespace"] = namespace
+
+        logger.info(
+            "Query answered with %d sources (namespace=%s)",
+            result["num_sources_used"], namespace,
+        )
         return result
     
-    def query_stream(
+    async def query_stream(
         self,
         question: str,
         namespace: str = "",
         chat_history: Optional[List] = None,
         filename_filter: Optional[str] = None,
     ):
-        """Streaming variant of :meth:`query` — yields SSE events.
+        """Streaming variant of :meth:`query` — async generator yielding SSE events.
 
-        Pipeline: Rewrite → Multi-Query (C) → Hybrid Retrieve (A) →
+        Pipeline: Rewrite → Multi-Query (C, parallel) → Hybrid Retrieve (A) →
                   Dedup (E) → Re-rank (B) → Stream Generate → Verify (D)
 
         Yields:
@@ -224,9 +234,9 @@ class RAGPipeline:
         chat_history = chat_history or []
 
         try:
-            rewritten = self.generation_manager.rewrite_query(question, chat_history)
+            rewritten = await self.generation_manager.rewrite_query(question, chat_history)
             retrieval_manager = self._get_retrieval_manager(namespace)
-            docs = self._multi_query_retrieve(
+            docs = await self._multi_query_retrieve_async(
                 rewritten, retrieval_manager, filename_filter
             )
 
@@ -236,7 +246,8 @@ class RAGPipeline:
                 yield "data: [DONE]\n\n"
                 return
 
-            yield from self.generation_manager.generate_stream(rewritten, docs, chat_history)
+            async for event in self.generation_manager.generate_stream(rewritten, docs, chat_history):
+                yield event
 
         except Exception as e:
             logger.exception("pipeline.query_stream failed")

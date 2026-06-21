@@ -80,7 +80,13 @@ class RetrievalManager:
     # ── Feature B: Cross-Encoder Re-ranking ───────────────────────────────
 
     def _get_cross_encoder(self):
-        """Lazy-load the cross-encoder model on first use (~22MB download)."""
+        """Load the cross-encoder model synchronously (call from a thread).
+
+        This is intentionally synchronous — callers must use
+        ``asyncio.to_thread(_get_cross_encoder)`` or call it from a
+        ``run_in_executor`` context to avoid blocking the event loop.
+        The ~22MB model download/load takes ~1-3s on first call.
+        """
         if self._cross_encoder is None:
             try:
                 from sentence_transformers import CrossEncoder
@@ -94,6 +100,17 @@ class RetrievalManager:
                 )
                 return None
         return self._cross_encoder
+
+    async def preload_cross_encoder(self):
+        """Async-safe wrapper to pre-load the cross-encoder at startup.
+
+        Called from the FastAPI lifespan so the first query doesn't pay
+        the model-load cost. Uses asyncio.to_thread to keep the event loop free.
+        """
+        import asyncio
+        await asyncio.to_thread(self._get_cross_encoder)
+        logger.info("Cross-encoder pre-loaded asynchronously.")
+
 
     def _rerank_documents(
         self, query: str, docs: List[Document]
@@ -301,12 +318,57 @@ class RetrievalManager:
     # ── Deletion ──────────────────────────────────────────────────────────
 
     def delete_document_by_filename(self, filename: str):
-        """Delete all vectors in Pinecone whose ``filename`` metadata matches."""
+        """Delete all vectors in Pinecone whose ``filename`` metadata matches.
+
+        Bug 4 fix: Pinecone serverless indexes do NOT support filter-based
+        deletion (``delete(filter={...})``). That call silently succeeds but
+        deletes nothing on serverless. The correct approach is to:
+          1. Fetch the matching vector IDs via a dummy similarity search
+             with a metadata filter (supported on all index types).
+          2. Delete by explicit vector IDs (supported everywhere).
+        """
         try:
-            self.vectorstore.delete(filter={"filename": filename})
-            logger.info("Deleted documents with filename: %s", filename)
+            # Step 1: Retrieve matching vectors by metadata filter.
+            # We use similarity_search to get document IDs since Pinecone
+            # serverless only supports ID-based deletion.
+            matching_docs = self.vectorstore.similarity_search(
+                query="",           # dummy query — we only care about the filter
+                k=10_000,           # large enough to catch all chunks
+                filter={"filename": filename},
+            )
+
+            if not matching_docs:
+                logger.warning(
+                    "delete_document_by_filename: no vectors found for filename=%s "
+                    "(nothing deleted — file may not be indexed yet)",
+                    filename,
+                )
+                return
+
+            # Step 2: Extract chunk_ids stored in metadata and delete by ID.
+            vector_ids = [
+                doc.metadata["chunk_id"]
+                for doc in matching_docs
+                if doc.metadata.get("chunk_id")
+            ]
+
+            if not vector_ids:
+                logger.warning(
+                    "delete_document_by_filename: vectors found but no chunk_id "
+                    "in metadata for filename=%s — cannot delete by ID",
+                    filename,
+                )
+                return
+
+            self.vectorstore.delete(ids=vector_ids)
+            logger.info(
+                "Deleted %d vectors for filename=%s", len(vector_ids), filename
+            )
+
         except Exception as e:
-            logger.error("Failed to delete documents with filename %s: %s", filename, e)
+            logger.error(
+                "Failed to delete documents with filename %s: %s", filename, e
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
