@@ -61,7 +61,11 @@ async def query(
     ]
 
     try:
-        result = pipeline.query(
+        # BUG-1 fix: RAGPipeline.query is `async def`. Calling it without
+        # `await` returned an un-awaited coroutine, so `result["answer"]`
+        # below raised "TypeError: 'coroutine' object is not subscriptable"
+        # on every request — chat was 100% broken.
+        result = await pipeline.query(
             question=payload.question,
             namespace=user_id,
             chat_history=history,
@@ -96,13 +100,21 @@ async def query_stream(
         for msg in (payload.chat_history or [])
     ]
 
-    def event_generator():
-        yield from pipeline.query_stream(
+    # BUG-1 fix: RAGPipeline.query_stream is an async generator, but this
+    # generator was `def` (sync) doing `yield from` over it. Sync `yield from`
+    # only works on objects with __iter__; async generators only implement
+    # __aiter__/__anext__, so the first iteration raised
+    # "TypeError: 'async_generator' object is not iterable" and no SSE bytes
+    # ever reached the client. Making the generator `async def` and using
+    # `async for` lets Starlette drive it correctly.
+    async def event_generator():
+        async for event in pipeline.query_stream(
             question=payload.question,
             namespace=user_id,
             chat_history=history,
             filename_filter=payload.filename_filter,
-        )
+        ):
+            yield event
 
     return StreamingResponse(
         event_generator(),

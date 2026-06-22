@@ -277,7 +277,7 @@ class RAGPipeline:
     #  Convenience
     # ─────────────────────────────────────────────────────────────────────────
 
-    def ingest_and_query(
+    async def ingest_and_query(
         self,
         file_path: str,
         question: str,
@@ -289,9 +289,13 @@ class RAGPipeline:
 
         Returns the same dict as :meth:`query`, plus an ``"ingested_chunks"`` key.
         """
+        # BUG-1 fix: same async/await mismatch as the chat routes — `query` is
+        # `async def`, so calling it without `await` returned a coroutine and
+        # `result["ingested_chunks"] = ...` would raise TypeError. This method
+        # itself must be async too since it now awaits `self.query(...)`.
         effective_namespace = namespace or user_id
         chunk_count = self.ingest_file(file_path, user_id=user_id, namespace=effective_namespace)
-        result = self.query(
+        result = await self.query(
             question,
             namespace=effective_namespace,
             chat_history=chat_history,
@@ -304,7 +308,7 @@ class RAGPipeline:
 #  Quick smoke test
 # ══════════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+async def _smoke_test():
     from pathlib import Path
 
     config = Config()
@@ -321,9 +325,14 @@ if __name__ == "__main__":
     print(f"Ingested {chunks} chunks")
 
     print("\\n=== Querying ===")
-    result = pipeline.query(
+    # BUG-1 fix: query() is async — must be awaited, same as the chat routes.
+    result = await pipeline.query(
         "How does Smart Signal use reinforcement learning?",
         namespace="test_user",
     )
     print("Answer:", result["answer"])
     print("Sources:", result["sources"])
+
+
+if __name__ == "__main__":
+    asyncio.run(_smoke_test())
