@@ -254,3 +254,32 @@ It also created a sneakier problem on login and signup specifically: if "wrong p
 **The fix:** instead of showing the user the real error, I generate a short random reference code (like `ref: a1b2c3d4`), write the *real* error to the server logs next to that code, and show the user only a generic message plus that code. If they contact support, support can search the logs for that exact code and see exactly what happened — but a random visitor on the internet just sees "Invalid email or password" and nothing else, every time, no matter what actually went wrong internally.
 
 **How I proved it:** I wrote a test that makes the backend fail with a fake "sensitive" error message, then checks whether that message shows up in the response. Funny enough, my first version of this test was broken — it said "no leak" even on the *original, unfixed* code, because the test string had quote marks in it that get encoded differently in JSON, so my check wasn't really checking anything. A reproduction test passing on the first try is a red flag, not a relief — I fixed the test itself, reran it, and *then* it correctly failed against the broken code and passed after the real fix.
+
+---
+
+## SEC-3: Service-role key bypasses Row-Level Security — audited, not code-changed
+
+**Status:** Audited 2026-06-24 — no code change (by design, see below)
+
+### Finding
+The backend uses Supabase's **service-role key** (`service_client`) for every storage and `user_documents` table operation. That key bypasses Postgres Row-Level Security entirely — so the `auth.uid() = user_id` RLS policies defined in [supabase_migration.sql](supabase_migration.sql) are currently **inert**: they never run, because the backend never authenticates to Supabase as the actual user, only as the service role.
+
+I audited every method in [database.py](src/components/database.py) to check what's actually standing in RLS's place:
+- Every `user_documents` table call (`record_upload`, `get_user_documents`, `delete_document_record`) has an explicit `.eq("user_id", user_id)` / `{"user_id": user_id}` filter.
+- Every storage call (`upload_file`, `download_file`, `delete_file`) goes through `_storage_path(user_id, filename)`, which — since the SEC-2 fix — now also sanitizes `filename` so it can't escape the `{user_id}/` prefix.
+
+So today, isolation between users holds **entirely because the application code remembers to do it correctly on every call** — there is no second layer (RLS) that would catch a mistake. That matches what the original review found ("it mostly does [pass user_id correctly]"), and SEC-2 closed the one concrete gap (filename traversal) that could have turned a missing check into an actual cross-user leak.
+
+### Why this wasn't turned into a code change
+Two ways to close the remaining gap exist, and they're genuinely different in cost/risk, not just two ways to write the same fix:
+1. **Per-request, user-JWT-scoped Supabase clients** — so Postgres RLS actually runs as the real safety net. This is the architecturally correct answer, but it's a change to *how the backend authenticates to Supabase on every request*, not a contained patch — `dependencies.py`'s singleton `get_db()` pattern and every `SupabaseManager` method would need rework.
+2. **Keep the service-role client, rely on consistent explicit `user_id` filtering** (today's model, now with SEC-2 closed) — zero code change, but no defense-in-depth: the day someone adds a method and forgets the `user_id` filter, nothing catches it.
+
+I can't verify option 1 actually works without a live Supabase project with RLS policies enabled and real JWTs to test against — there's nothing in this local/offline dev environment to point a red/green test at, unlike every other bug in this file. Re-architecting the auth/DB-access layer on a guess, with no way to confirm it behaves correctly, is a worse outcome than documenting the real, current risk clearly and leaving the decision to whoever owns that tradeoff. Asked the user directly rather than picking silently; documenting-only was the chosen path.
+
+### Explain it simply (interview answer)
+Think of Row-Level Security (RLS) as a second lock on every user's data, enforced by the database itself: even if my application code has a bug, Postgres double-checks "does this row actually belong to the person asking for it?"
+
+The problem: my backend logs into the database using an admin/service key — like a master key that opens every door in the building, bypassing every individual room lock. So even though I *did* write the RLS policies (the individual room locks), they're never actually checked, because the backend never goes through them. Isolation between users currently depends 100% on my application code remembering to filter by the right user every single time — there's no safety net if I forget.
+
+**Why I didn't just "fix" it:** the real fix means changing *how the backend logs into the database* for every single request — instead of one shared admin key, each request would need to use that specific user's own credentials so the database's locks actually engage. That's a meaningfully bigger, riskier change than a bug patch, and I have no way to verify it actually works without a real, live database with those locks turned on — I don't have one in this environment. So instead of guessing at an authentication rewrite I couldn't test, I audited what's protecting users *today* (confirmed it's consistent), wrote up the real residual risk in plain terms, and gave the decision — and its tradeoffs — back to the person who owns that call, instead of quietly picking one myself.
