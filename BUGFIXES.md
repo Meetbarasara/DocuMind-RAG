@@ -66,6 +66,17 @@ Wrote [tests/test_chat_routes.py](tests/test_chat_routes.py) — an integration 
   ```
 - This test is now a permanent regression check — it stays in the repo, so this exact class of bug fails CI immediately if it ever recurs (previously CI had zero coverage that would have caught it).
 
+### Explain it simply (interview answer)
+Imagine you ask a friend to grab you coffee, but instead of waiting for them to come back, you immediately try to drink from the empty cup in your hand. That's what this code did.
+
+In Python, `async` means "this takes time, like a network call." When you call an async function, you're supposed to use `await` to actually wait for the result. My code called `pipeline.query(...)` — which talks to OpenAI — but forgot the `await`. Without it, Python doesn't run the function and hand back an answer; it hands back an empty placeholder called a "coroutine" (basically an IOU). My code then tried to read `result["answer"]` off that IOU, which crashed every single time.
+
+The streaming version had the same root cause in a different shape: it tried to read a live, ongoing stream of tokens using a tool that only knows how to loop over something already finished — like trying to listen to a live radio broadcast with a tool that only plays downloaded files. Also crashed.
+
+**The fix:** add the missing `await` (and the matching `async for` for the streaming version) so the code actually waits for and reads the real answer instead of an empty placeholder.
+
+**How I proved it:** wrote a test that hits the chat endpoint and checked the response. Before the fix, it failed with the exact error I expected (`coroutine object is not subscriptable`). After adding `await`, I ran the *same test* again — it passed, with a real answer coming back.
+
 ---
 
 ## SEC-2: Path traversal via unsanitized `filename` (upload / download / delete)
@@ -115,6 +126,19 @@ Added [tests/test_path_traversal.py](tests/test_path_traversal.py):
   ```
 - `pyflakes` clean on all changed files.
 
+### Explain it simply (interview answer)
+My app let users upload files, and whatever name the user gave the file, I trusted completely and used to build a path on the server's disk — basically `save_folder + "/" + filename`.
+
+**The attack:** instead of uploading `report.pdf`, an attacker uploads a file but names it `../../etc/passwd` (or on Windows, `..\..\Windows\System32\evil.dll`). `..` means "go up one folder" to the operating system. So my code's path became `save_folder + "/" + "../../etc/passwd"` — which doesn't save *inside* the safe folder, it walks back *out* of it and writes somewhere else entirely. This is called **path traversal**: using `../` to escape the folder you're supposed to be locked into.
+
+**How I found it was real, not theoretical:** I wrote a test that uploads a fake file literally named `"../escape.txt"`, then checked exactly where the code was about to save it. The test proved the file landed *outside* the intended folder.
+
+**The fix:** before using any filename a user gives me, I strip away everything except the actual file name — the last piece after the last slash. `"../../etc/passwd"` becomes just `"passwd"`. `"report.pdf"` stays `"report.pdf"`. I used Python's `pathlib` (`PurePosixPath(name).name`) to grab just that last piece, throwing away every `../` trick before it. If nothing safe is left (someone sends just `".."` or an empty string), I reject the request instead of guessing.
+
+**How I proved the fix worked:** reran the *exact same test* — now the file landed safely inside the intended folder. Same test, red before, green after.
+
+**Honest bonus point for an interview:** I assumed the *delete* endpoint had the identical bug, but when I actually tried to trigger it, the request never even reached my code — FastAPI's own routing already blocks `/` and `..` in that URL segment. I fixed it there too (defense-in-depth), but I was careful not to claim I'd found a live exploit where there wasn't one — I said so explicitly instead of overstating it.
+
 ---
 
 ## SEC-7: Rate limiter built but never enforced on any route
@@ -141,6 +165,15 @@ Added [tests/test_rate_limiting.py](tests/test_rate_limiting.py):
 - **Before the fix:** fired 10 rapid login attempts (wrong password, so each would normally just be a `401`) at the real app. Got `[401, 401, 401, 401, 401, 401, 401, 401, 401, 401]` — never throttled, proving the limiter genuinely had no effect.
 - **After the fix:** re-ran the identical test — a `429` now appears partway through the 10 attempts, while the very first request still succeeds normally (no false-positive throttling of legitimate single requests).
 
+### Explain it simply (interview answer)
+I had a "rate limiter" object built and registered in the app — like hiring a bouncer and having them stand near the building. But nobody ever told the bouncer *which door* to actually guard. So people could hammer the login page hundreds of times (password guessing) or spam signups, and the app let every single request through.
+
+**Why it happened:** the limiter was created inside `main.py`, but `main.py` is also the file that imports all the route files (login, upload, chat). So those route files couldn't import the limiter back out — that's a circular import, Python won't allow it. The bouncer existed; he just had no way to get to the door.
+
+**The fix:** I moved the limiter into its own small file, so any route file can import it cleanly. Then I added one line above each sensitive endpoint (login, signup, upload, chat) saying "limit this to N requests per minute."
+
+**How I proved it:** wrote a test that fires 10 fake login attempts back-to-back. Before the fix: all 10 came back as normal "wrong password" responses — never blocked. After the fix: somewhere in those 10, the server starts replying "429 Too Many Requests" instead.
+
 ---
 
 ## SEC-6: Unbounded upload size
@@ -166,3 +199,10 @@ Added [tests/test_upload_size_limit.py](tests/test_upload_size_limit.py) (using 
 - **After the fix:** the identical 2KB upload now gets `413 Payload Too Large`, and a normal small upload still succeeds (`201`) — confirming the cap doesn't break legitimate use.
 
 Full suite after both fixes: 21 passed. `pyflakes` and `ruff --select E,F,I` clean on every changed file.
+
+### Explain it simply (interview answer)
+When someone uploaded a file, my code said "read the whole thing into memory" with no limit at all — like a mailroom that accepts a package of *any* size, sight unseen. Someone could upload a massive file and eat up all the server's memory, crashing it for everyone else — that's a denial-of-service.
+
+**The fix:** I made the upload reader read the file in small pieces (1MB at a time) and keep a running total. The instant that total goes over a limit (50MB by default), it stops and rejects the upload — so the server never holds more than ~50MB in memory no matter how big the attacker's file claims to be.
+
+**How I proved it:** test uploads a file bigger than the limit. Before the fix: accepted fine (`201`) — proving there was no cap. After the fix: rejected with `413 Payload Too Large`. A normal small file still uploads fine either way.
