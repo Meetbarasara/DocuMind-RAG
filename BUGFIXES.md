@@ -414,3 +414,158 @@ That's what my keyword-search index was doing: rebuilding itself only from whate
 **The fix:** stop treating "the most recent upload" as the source of truth, and treat the *actual database* (Pinecone, where every chunk really lives permanently) as the source of truth instead. Now, whenever the catalog might be out of date (after an upload or a deletion), I just mark it stale — and the next time anyone needs it, the code walks the actual shelves (queries Pinecone for everything in that namespace) and rebuilds the whole catalog from what's really there. A brand-new front-desk person — a freshly restarted server, or a different worker process — gets the *exact same correct catalog* the moment they need it, because they're reading from the real shelves, not from a previous person's notes.
 
 **How I proved it:** I simulated "upload file 1, then upload file 2" and checked whether file 1's words were still searchable afterward (they weren't, pre-fix — confirmed the bug). Then I simulated "a brand new instance that never personally handled any upload" and checked whether it could immediately find content from files it never saw uploaded — proving the fresh-process/different-worker scenario specifically, not just the "two uploads in a row" scenario.
+
+---
+
+## BUG-2: `sign_out` called the admin API on the anon client instead of the service client
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[database.py](src/components/database.py) `sign_out()` called `self.client.auth.admin.sign_out(access_token)` — but `self.client` is built with the **anon** key; `service_client` (built with the service-role key) is a separate attribute. The call raised every time, was caught, logged, and turned into a `return False` — so logout never actually invalidated the session server-side. The JWT stayed valid until it expired naturally; only the frontend's local state got cleared, masking the failure from the user.
+
+### Root Cause
+Supabase's Admin API (`auth.admin.*`) is meant to be called with a service-role-authenticated client — that's the entire reason this class keeps `service_client` as a separate attribute from `client` in the first place. This one call used the wrong one.
+
+I didn't take the original review's speculation about the SDK signature at face value — it suggested `admin.sign_out` might take a user id rather than a JWT in some versions. I inspected the actually-installed SDK (`supabase==2.28.3`) directly: `admin.sign_out(jwt: str, scope: SignOutScope = "global")` does take a JWT. So the bug here is purely "wrong client instance," not a signature mismatch — a one-line fix once confirmed.
+
+### Fix
+[database.py](src/components/database.py) — `self.client.auth.admin.sign_out(...)` → `self.service_client.auth.admin.sign_out(...)`. No other change needed.
+
+### Why this approach
+Trusted the installed SDK's actual signature over the general "signatures vary across versions" caveat in the original review — checking the real, pinned dependency in this repo is more reliable than guessing at version-specific behavior that may not apply here.
+
+### Verification
+Added [tests/test_sign_out.py](tests/test_sign_out.py): constructs a real `SupabaseManager` (fake URL/keys — safe, since `create_client` itself doesn't make a network call, only triggering it would), then patches `admin.sign_out` on *both* `db.client` and `db.service_client` separately — one raises (simulating "wrong client"), one records success — to see which one the real code actually calls.
+
+- **Before the fix:** the anon client's fake was called, raised, and `sign_out()` returned `False`.
+- **After the fix:** the service client's fake was called and succeeded; `sign_out()` returned `True`.
+
+### Explain it simply (interview answer)
+Some operations need "manager" permissions, not just "logged-in user" permissions — forcibly invalidating someone's session from the server side is one of them. My code had two different "badges" available: a regular employee badge (`self.client`, anon key) and a manager badge (`self.service_client`, service-role key). The logout code was trying to do a manager-only action while wearing the regular employee badge — it got rejected every time, the rejection was quietly swallowed, and the app just told the user "you're logged out" without the server ever actually invalidating anything.
+
+**The fix:** use the manager badge for the manager-only action. One line.
+
+**How I proved it:** I gave each badge (each client object) its own fake "sign out" function and watched which one actually got called when I ran the real code. Before the fix, the employee badge's fake got called (and "rejected" itself, just like the real one would). After the fix, the manager badge's fake got called and succeeded.
+
+---
+
+## BUG-7: Deleting a document relied on a ranked search, not a real listing, to find its vectors
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[retrieval.py](src/components/retrieval.py) `delete_document_by_filename` found the vectors to delete via `similarity_search(query="", k=10_000, filter={"filename": filename})` — embedding an empty string and asking for the top 10,000 *ranked* results. That's a search, not a listing: nothing guarantees a ranked vector search returns literally every vector matching a filter, no matter how large `k` is set. A document with enough chunks, or just unlucky ANN recall, could leave orphaned vectors in Pinecone after "deleting" a file.
+
+### Root Cause
+The existing code already correctly worked around one Pinecone limitation (serverless indexes don't support `delete(filter={...})` — documented in its own "Bug 4 fix" comment) by finding IDs via search and deleting by ID instead. But it used the wrong tool to find those IDs: a similarity search, when Pinecone actually exposes a real listing API (`index.list(prefix=...)`) for exactly this purpose — IDs that share a known prefix.
+
+The reason it wasn't already listing by prefix: chunk IDs were built in [embeddings.py](src/components/embeddings.py) as `f"{source}::{content_hash}"`, where `source` was `metadata["source"]` — the **local temp filesystem path** used during ingestion (e.g. `tmp_uploads/report.pdf`), not the stable original filename. That's usable as an opaque unique ID, but not a clean, predictable prefix to list by later.
+
+### Fix
+1. [embeddings.py](src/components/embeddings.py) — chunk IDs now use `metadata["filename"]` (confirmed via `unstructured`'s own metadata convention to always be just the basename, matching the already-sanitized name from SEC-2 exactly) instead of `metadata["source"]`. IDs are now `f"{filename}::{content_hash}"` — a stable, predictable, listable prefix per file.
+2. [retrieval.py](src/components/retrieval.py) `delete_document_by_filename` — replaced the similarity-search workaround with `self.vectorstore.index.list(prefix=f"{filename}::", namespace=...)`, which paginates through *every* vector ID with that prefix — a real, exhaustive listing, not a ranked search — then deletes by those exact IDs.
+
+### Why this approach
+`index.list(prefix=...)` is specifically designed for this exact use case (enumerate everything under a known ID prefix) and is supported on serverless, unlike filter-based delete. It only required chunk IDs to be built on something stable and prefix-friendly — switching from the volatile temp path to the already-stable, already-sanitized filename was the smallest change that made that possible, with no schema migration or new infrastructure needed.
+
+### Verification
+Added [tests/test_delete_by_filename.py](tests/test_delete_by_filename.py) with a fake Pinecone index whose `list()` deliberately yields results across **two batches** (to prove pagination is actually handled, not just a single lucky call) — built via `RetrievalManager.__new__(...)` for the same reason as BUG-4/5 (constructing the real class hits Pinecone's network immediately).
+
+- **Before the fix:** failed with `AttributeError: 'FakeVectorStore' object has no attribute 'similarity_search'` — confirms the implementation actually changed (the fake only exposes the *new* `index.list`-based interface).
+- **After the fix:** correctly collects all of a file's IDs across both fake pagination batches, deletes exactly those, and leaves a different file's vector (`other.pdf::xxx`) untouched.
+
+### Explain it simply (interview answer)
+Imagine trying to find every red car in a parking garage by doing a "most likely red cars" search and grabbing the top 10,000 guesses, instead of just walking every row and checking each car's color directly. The search approach usually works, but it's not a guarantee — it's optimized for "probably good enough," not "definitely complete." My code was using exactly that kind of search to decide which database entries to delete when a user deleted a file.
+
+**The fix:** Pinecone (the database) has an actual "list everything whose ID starts with X" feature — a real walk-every-row listing, not a best-guess search. I just had to make sure each chunk's ID actually *starts with* its filename (it didn't before — it was built from an internal temp file path instead), then switch the delete logic to use that real listing instead of the probabilistic search.
+
+**How I proved it:** I built a fake version of Pinecone's listing feature that deliberately returns results in two separate batches (simulating a big result needing multiple "pages"), then checked that my delete logic correctly gathered IDs from *both* batches before deleting — proving it doesn't just grab the first page and call it done.
+
+---
+
+## BUG-8: Citation verification reported correct citations as "unverified" when a chunk had no page number
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[generation.py](src/components/generation.py) `_build_context_and_sources` builds two things from the same retrieved chunks: a context label shown to the LLM (`f"Page: {meta.get('page_number', 'N/A')}"` — correctly defaults to `"N/A"`), and a `sources` list used later to verify citations (`"page": meta.get("page_number")` — no default at all). When a chunk had no page number, the LLM correctly saw and cited `"Page: N/A"` (matching what it was shown), but the sources list recorded `page: None` for that same chunk. `_verify_citations`'s lookup set then computed `str(None).lower()` → `"none"`, which doesn't match the LLM's `"n/a"` — so a citation that was *exactly correct* got reported as unverified.
+
+### Root Cause
+`dict.get(key, default)`'s default only applies when the *key is missing* — not when the key is present with value `None`. The context-label line happened to read correctly off a dict where the key really was absent (so its default kicked in); the sources-list line either didn't specify a default at all, or (in `_verify_citations`) specified one that the same absent-vs-None distinction silently bypassed.
+
+### Fix
+[generation.py](src/components/generation.py) `_build_context_and_sources` — changed `"page": meta.get("page_number")` to `"page": meta.get("page_number") or "N/A"`, which normalizes both "key absent" and "key present but falsy/None" to the same `"N/A"` the LLM is shown.
+
+### Why this approach
+Fixing it where the inconsistency is actually introduced (the sources list) rather than papering over it in `_verify_citations` keeps the *meaning* of "page" consistent everywhere downstream — `result["page"]` is now reliably either a real page number or the literal string `"N/A"`, never `None`. This is a narrower fix than the deeper issue the original review flagged (BUG-11: many chunks lose `page_number` entirely during chunking) — that's a separate, out-of-scope problem about *data loss during ingestion*; this fix only ensures the verification logic doesn't *also* introduce its own spurious mismatches on top of whatever page data does or doesn't survive ingestion.
+
+### Verification
+Added [tests/test_citation_page_defaults.py](tests/test_citation_page_defaults.py):
+- **Before the fix:** a `Document` with no `page_number` in its metadata produced `sources[0]["page"] is None` instead of `"N/A"`.
+- **After the fix:** the same document produces `"N/A"`, and a citation verification test confirms `[Source: report.pdf, Page: N/A]` against a source with `page: "N/A"` is correctly marked verified (score `1.0`), not flagged as a mismatch.
+
+### Explain it simply (interview answer)
+My code showed the AI assistant a label like "Page: N/A" for chunks that don't have a real page number — that part was correct. But when double-checking the assistant's citations afterward, the code that built the "what pages actually exist" list used a shortcut that quietly turned "no page number" into the value `None` instead of the text `"N/A"`. So when the assistant correctly wrote "Page: N/A" (copying exactly what it was shown), my verification step compared the text `"n/a"` against the value `none` — two different strings — and incorrectly flagged a perfectly correct citation as wrong.
+
+**The fix:** make sure "no page number" always becomes the same `"N/A"` text everywhere, not `None` in one place and `"N/A"` in another.
+
+**How I proved it:** fed the function a chunk with no page number and checked exactly what value it produced — `None`, not `"N/A"` — before the fix. After the fix, same input, correct `"N/A"`. Then double-checked the downstream verification logic accepts that `"N/A"` as a real match.
+
+---
+
+## BUG-9: `CORS_ORIGINS` was hardcoded to localhost — no way to configure it for a real deployment
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[config.py](src/components/config.py) `CORS_ORIGINS` was a literal hardcoded list (`["http://localhost:8501"]`) with no way to add a deployed frontend's real origin short of editing source code.
+
+### Fix
+`CORS_ORIGINS` now reads a comma-separated `CORS_ORIGINS` environment variable, falling back to the same `http://localhost:8501` default when unset. Documented the new variable in [.env.example](.env.example).
+
+### Verification
+Added [tests/test_cors_config.py](tests/test_cors_config.py):
+- **Before the fix:** setting the `CORS_ORIGINS` env var had no effect at all — `Config().CORS_ORIGINS` was always `["http://localhost:8501"]` regardless.
+- **After the fix:** unset still gives the same default (no regression); setting `CORS_ORIGINS=https://app.example.com, https://admin.example.com` correctly produces both origins as a trimmed list.
+
+### Explain it simply (interview answer)
+The list of websites allowed to talk to this API was baked directly into the code as just "my laptop during development." To let a real, deployed frontend talk to the API, someone would have had to edit and redeploy the backend's source code just to add an address to a list — that's a deployment config that shouldn't require a code change.
+
+**The fix:** read that list from an environment variable instead, with the old localhost behavior as the default if nobody sets it (so nothing breaks for local development).
+
+---
+
+## BUG-10: A failed upload could leave orphaned data while still reporting success
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[documents.py](src/api/router/documents.py) `upload_document` runs four steps (storage upload → temp file write → Pinecone ingest → metadata record) with no rollback in either failure direction:
+- If **ingestion** failed after the storage upload succeeded, the storage object was left behind — only the local temp file got cleaned up.
+- `record_upload`'s return value was **never checked**. If it failed (the existing code already only logs a warning and returns `None` on failure), the response still said `201 Created` — but the file had no row in `user_documents`, the table the UI lists from. Net effect: a file invisible to the user, yet its storage object and Pinecone vectors still existed, still consumed quota, and could still be retrieved and answered by chat — a zombie file the user has no way to even see, let alone delete.
+
+### Root Cause
+Three independent systems (Supabase Storage, Pinecone, Supabase Postgres) with no shared transaction — a failure partway through left whichever earlier steps had already succeeded in place, with nothing undoing them.
+
+### Fix
+[documents.py](src/api/router/documents.py) `upload_document`:
+1. If ingestion raises, best-effort `db.delete_file(...)` before re-raising (cleans up the otherwise-orphaned storage object).
+2. `record_upload`'s return value is now checked. If falsy, best-effort rolls back **both** the storage object and the Pinecone vectors, then raises a `500` instead of returning `201`.
+3. Both rollback attempts are individually wrapped in their own `try/except` — a cleanup step failing is logged but never allowed to mask or replace the original error that triggered the rollback in the first place.
+
+### Why this approach
+Went with compensating cleanup (try the operations, undo on failure) rather than the review's other suggested option — recording metadata *first* with a "processing" status — because that alternative needs a schema change (a status column) and a follow-up reconciliation job to handle ingestion finishing async, which is a bigger redesign than this specific failure mode calls for. Best-effort rollback directly closes the worse of the two outcomes the review flagged: a file that's invisible to the user but still fully live and queryable. It doesn't guarantee perfect consistency under every possible crash (e.g. the process dying mid-rollback), but neither did anything before this fix, and it removes the common case entirely.
+
+### Verification
+Added [tests/test_upload_rollback.py](tests/test_upload_rollback.py) with fakes for `db`/`pipeline` that simulate each failure point:
+- **Before the fix:** simulated ingestion failure left the storage object un-deleted; simulated `record_upload` failure still returned `201 Created` with no rollback of either storage or Pinecone.
+- **After the fix:** ingestion failure triggers a storage delete; `record_upload` failure triggers both a storage delete and a Pinecone delete, and the response is no longer `201`.
+- A third test confirms the *successful* path triggers no rollback calls at all — the fix doesn't make normal uploads slower or touch cleanup code unnecessarily.
+
+### Explain it simply (interview answer)
+Uploading a file in this app is really four separate steps talking to three different systems: save the raw file, write a temp copy, turn it into searchable AI vectors, and record "this file exists" in a database table. Nothing tied those four steps together — if step 3 or step 4 failed, steps 1 and 2 (or 1-3) had already fully happened and just... stayed that way. Worse, step 4 failing didn't even change the response — the user was told "upload successful" while the file was actually invisible to them (the app's file list reads from that same table that never got the row).
+
+**The fix:** if a later step fails, go back and best-effort undo the earlier steps that already succeeded — delete the stored file, delete the half-created search vectors — instead of leaving them behind as orphaned data nobody can see or clean up. And stop telling the user "success" when the step that makes the file actually *visible* to them never happened.
+
+**How I proved it:** I simulated each failure point separately (ingestion fails; metadata-recording fails) and checked whether the earlier successful steps got cleaned up afterward. Before the fix: they didn't, in either case. After the fix: each failure triggers exactly the right cleanup, and — importantly — a fully successful upload still doesn't trigger any unnecessary cleanup calls at all.

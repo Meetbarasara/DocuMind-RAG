@@ -124,10 +124,19 @@ class AnswerGeneration:
             )
             context_parts.append(f"{source_label}\n{doc.page_content}\n")
 
+            # BUG-8 fix: the context label above correctly defaults to
+            # "N/A" via meta.get('page_number', 'N/A') — but .get() only
+            # applies that default when the *key* is absent, not when it's
+            # present with value None. This line used to plain
+            # meta.get("page_number") with no default at all, so a missing
+            # page became `None` here while the LLM (having seen "N/A" in
+            # the label above) naturally cited "Page: N/A" — a mismatch
+            # that made _verify_citations report a correct citation as
+            # unverified.
             sources.append({
                 "source_id": i,
                 "filename": meta.get("filename"),
-                "page": meta.get("page_number"),
+                "page": meta.get("page_number") or "N/A",
                 "chunk_type": meta.get("chunk_type"),
                 "chunk_id": meta.get("chunk_id"),
             })

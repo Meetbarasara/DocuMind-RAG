@@ -119,7 +119,14 @@ class SupabaseManager:
             # The correct approach is to call sign_out() with the JWT directly
             # so Supabase invalidates the server-side session without needing
             # the refresh token at all.
-            self.client.auth.admin.sign_out(access_token)
+            #
+            # BUG-2 fix: admin.* operations require the service-role client.
+            # self.client is the anon-key client — calling admin.sign_out on
+            # it raised every time, was caught right below, and silently
+            # returned False, so logout never actually invalidated the
+            # session server-side (the JWT stayed valid until natural
+            # expiry; only the frontend's local state was cleared).
+            self.service_client.auth.admin.sign_out(access_token)
             logger.info("sign_out: session invalidated")
             return True
         except Exception as e:

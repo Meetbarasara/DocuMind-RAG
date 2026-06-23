@@ -129,6 +129,14 @@ async def upload_document(
             namespace=user_id,
         )
     except Exception as e:
+        # BUG-10 fix: ingestion failing here used to leave the storage
+        # object from step 1 orphaned — only the local temp file got
+        # cleaned up. Best-effort delete it too; a cleanup failure is
+        # logged but must not mask the original ingestion error.
+        try:
+            db.delete_file(user_id=user_id, filename=safe_filename)
+        except Exception:
+            logger.warning("Cleanup after failed ingestion also failed for %s", safe_filename)
         ref = log_and_get_ref(logger, "Ingestion failed", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -140,12 +148,33 @@ async def upload_document(
             tmp_path.unlink(missing_ok=True)
 
     # ── 4. Record metadata ───────────────────────────────────────────────
-    db.record_upload(
+    # BUG-10 fix: this return value used to go unchecked. On failure, the
+    # storage object and Pinecone vectors from steps 1+3 would still exist
+    # with no metadata row — invisible in the UI (which lists from this
+    # table), yet still consuming quota and still answerable by chat,
+    # while the client was told 201 success regardless.
+    upload_record = db.record_upload(
         user_id=user_id,
         filename=safe_filename,
         file_type=ext,
         size_bytes=file_size,
     )
+    if not upload_record:
+        try:
+            db.delete_file(user_id=user_id, filename=safe_filename)
+        except Exception:
+            logger.warning("Storage rollback after failed record_upload failed for %s", safe_filename)
+        try:
+            pipeline.delete_document(filename=safe_filename, namespace=user_id)
+        except Exception:
+            logger.warning("Pinecone rollback after failed record_upload failed for %s", safe_filename)
+        ref = log_and_get_ref(
+            logger, "Failed to record upload metadata", Exception("record_upload returned None")
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Upload failed. (ref: {ref})",
+        )
 
     return {
         "message": "Document uploaded and ingested successfully",

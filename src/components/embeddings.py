@@ -116,9 +116,17 @@ class EmbeddingManager:
             )
 
             # ── Step 2: Assign a stable chunk_id per document ────────────
+            # BUG-7 fix: this used metadata["source"] (the local temp
+            # filesystem path used during ingestion, e.g.
+            # "/tmp_uploads/report.pdf") instead of metadata["filename"]
+            # (the stable, sanitized original name). The temp path isn't a
+            # reliable prefix to delete by later — using "filename" instead
+            # makes chunk_id a stable f"{filename}::{hash}" id, so every
+            # chunk of a given file can be exhaustively listed by prefix
+            # (see RetrievalManager.delete_document_by_filename).
             for doc in documents:
-                source = doc.metadata.get("source", "unknown")
-                doc.metadata["chunk_id"] = f"{source}::{doc.metadata['content_hash']}"
+                file_key = doc.metadata.get("filename", "unknown")
+                doc.metadata["chunk_id"] = f"{file_key}::{doc.metadata['content_hash']}"
 
             # ── Step 3: Clean metadata for Pinecone compatibility ────────
             for doc in documents:

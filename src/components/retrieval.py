@@ -379,41 +379,33 @@ class RetrievalManager:
 
         Bug 4 fix: Pinecone serverless indexes do NOT support filter-based
         deletion (``delete(filter={...})``). That call silently succeeds but
-        deletes nothing on serverless. The correct approach is to:
-          1. Fetch the matching vector IDs via a dummy similarity search
-             with a metadata filter (supported on all index types).
-          2. Delete by explicit vector IDs (supported everywhere).
+        deletes nothing on serverless. Vectors must be deleted by explicit ID.
+
+        BUG-7 fix: the previous way of finding those IDs was
+        ``similarity_search(query="", k=10_000, filter={"filename": ...})``
+        — an embedded empty string fed into a *ranked* top-k vector search.
+        That's not a guaranteed exhaustive enumeration of every matching
+        vector (ANN search can have imperfect recall regardless of how
+        large k is set), so a document with enough chunks — or just an
+        unlucky day — could leave orphaned vectors behind.
+        ``index.list(prefix=...)`` is a real, paginated *listing* of every
+        vector ID with that prefix, not a search — relies on chunk_id
+        being ``f"{filename}::{content_hash}"`` (see embeddings.py) so the
+        filename forms a stable, listable ID prefix.
         """
         try:
-            # Step 1: Retrieve matching vectors by metadata filter.
-            # We use similarity_search to get document IDs since Pinecone
-            # serverless only supports ID-based deletion.
-            matching_docs = self.vectorstore.similarity_search(
-                query="",           # dummy query — we only care about the filter
-                k=10_000,           # large enough to catch all chunks
-                filter={"filename": filename},
-            )
-
-            if not matching_docs:
-                logger.warning(
-                    "delete_document_by_filename: no vectors found for filename=%s "
-                    "(nothing deleted — file may not be indexed yet)",
-                    filename,
-                )
-                return
-
-            # Step 2: Extract chunk_ids stored in metadata and delete by ID.
-            vector_ids = [
-                doc.metadata["chunk_id"]
-                for doc in matching_docs
-                if doc.metadata.get("chunk_id")
-            ]
+            prefix = f"{filename}::"
+            vector_ids = []
+            for id_batch in self.vectorstore.index.list(
+                prefix=prefix, namespace=self.config.PINECONE_NAMESPACE
+            ):
+                vector_ids.extend(id_batch)
 
             if not vector_ids:
                 logger.warning(
-                    "delete_document_by_filename: vectors found but no chunk_id "
-                    "in metadata for filename=%s — cannot delete by ID",
-                    filename,
+                    "delete_document_by_filename: no vectors found with prefix=%s "
+                    "(nothing deleted — file may not be indexed yet)",
+                    prefix,
                 )
                 return
 

@@ -91,5 +91,13 @@ class Config:
     # ── API server settings ───────────────────────────────────────────
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
-    CORS_ORIGINS: List[str] = field(default_factory=lambda: ["http://localhost:8501"])
+    # BUG-9 fix: was a hardcoded localhost-only list — env-driven now so a
+    # deployed frontend's real origin can be added without editing source.
+    CORS_ORIGINS: List[str] = field(
+        default_factory=lambda: [
+            origin.strip()
+            for origin in os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
+            if origin.strip()
+        ]
+    )
 
