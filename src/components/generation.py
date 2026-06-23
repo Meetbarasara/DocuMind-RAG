@@ -391,10 +391,13 @@ class AnswerGeneration:
                 "question": query,
                 "chat_history": chat_history_str,
             }):
-                text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
-                if text_chunk:
-                    full_answer += text_chunk
-                    yield f"data: {json.dumps({'type': 'token', 'content': text_chunk})}\n\n"
+                # Nit fix: StrOutputParser's astream() always yields a
+                # str-like chunk (confirmed empirically: it's a TextAccessor,
+                # itself a str subclass) — the dict-shaped fallback below
+                # was dead code that could never execute.
+                if chunk:
+                    full_answer += chunk
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
         except Exception as e:
             logger.error("SSE stream error: %s", e)
             yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"

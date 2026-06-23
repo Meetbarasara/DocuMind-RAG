@@ -52,6 +52,16 @@ class RAGPipeline:
 
     def _get_retrieval_manager(self, namespace: str) -> RetrievalManager:
         """Return (and cache) a RetrievalManager for the given *namespace*."""
+        # Nit fix: Pinecone treats namespace="" as a real, literal
+        # namespace (the default one) — a caller that forgot to pass a
+        # real per-user namespace would silently read/write that shared
+        # bucket instead of failing loudly. Every query/ingest/delete path
+        # goes through this one method, so this is the right chokepoint.
+        if not namespace:
+            raise CustomException(
+                "Pinecone namespace must not be empty — refusing to silently "
+                "fall back to the shared default namespace."
+            )
         if namespace not in self._retrieval_managers:
             cfg = Config(
                 PINECONE_NAMESPACE=namespace,

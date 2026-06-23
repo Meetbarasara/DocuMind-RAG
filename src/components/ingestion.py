@@ -1,8 +1,5 @@
-import sys
 from pathlib import Path
 from typing import List
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from langchain_core.documents import Document
 from unstructured.chunking.title import chunk_by_title

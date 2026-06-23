@@ -1,12 +1,18 @@
 """frontend/utils.py — API client + session state helpers for DocuMind Streamlit UI."""
 
 import json
+import os
 from typing import Dict, Generator, List, Optional
 
 import httpx
 import streamlit as st
+from dotenv import load_dotenv
 
-API_BASE = "http://localhost:8000"
+load_dotenv()
+
+# Nit fix: was hardcoded to localhost — env-driven so the UI can point at
+# a deployed backend without editing source.
+API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 REQUEST_TIMEOUT = 60.0
 
 

@@ -3,17 +3,7 @@
 Run with:
     streamlit run frontend/app.py
 """
-import sys
-from pathlib import Path
-
 import streamlit as st
-
-# Ensure the project root is on sys.path so `from frontend.*` and
-# `from src.*` imports resolve correctly when Streamlit runs this file.
-_PROJECT_ROOT = str(Path(__file__).parent.parent.resolve())
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
