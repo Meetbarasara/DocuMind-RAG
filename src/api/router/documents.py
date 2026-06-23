@@ -11,10 +11,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 
 from src.api.dependencies import get_current_user, get_db, get_pipeline
+from src.api.error_utils import log_and_get_ref
 from src.api.limiter import limiter
 from src.components.database import SupabaseManager
+from src.logger import get_logger
 from src.pipeline.pipeline import RAGPipeline
 from src.utils import sanitize_filename
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -105,9 +109,10 @@ async def upload_document(
             content_type=file.content_type or "application/octet-stream",
         )
     except Exception as e:
+        ref = log_and_get_ref(logger, "Storage upload failed", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Storage upload failed: {e}",
+            detail=f"Storage upload failed. (ref: {ref})",
         )
 
     # ── 2. Write to temp file for ingestion ──────────────────────────────
@@ -124,9 +129,10 @@ async def upload_document(
             namespace=user_id,
         )
     except Exception as e:
+        ref = log_and_get_ref(logger, "Ingestion failed", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ingestion failed: {e}",
+            detail=f"Ingestion failed. (ref: {ref})",
         )
     finally:
         # Clean up temp file
@@ -199,9 +205,10 @@ async def delete_document(
     try:
         pipeline.delete_document(filename=filename, namespace=user_id)
     except Exception as e:
+        ref = log_and_get_ref(logger, "Failed to delete vectors from Pinecone", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete vectors from Pinecone: {e}",
+            detail=f"Failed to delete vectors from Pinecone. (ref: {ref})",
         )
 
     return {"message": f"'{filename}' deleted successfully"}

@@ -11,8 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 
 from src.api.dependencies import get_current_user, get_db
+from src.api.error_utils import log_and_get_ref
 from src.api.limiter import limiter
 from src.components.database import SupabaseManager
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -47,7 +51,15 @@ async def signup(request: Request, payload: AuthRequest, db: SupabaseManager = D
     try:
         result = db.sign_up(payload.email, payload.password)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        # SEC-4/SEC-5: raw Supabase error text (e.g. "user already
+        # registered" vs. some other failure) used to go straight to the
+        # client, which both leaks internals and lets an attacker tell
+        # accounts apart. Log the real reason, return a generic message.
+        ref = log_and_get_ref(logger, "Sign-up failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sign-up failed. (ref: {ref})",
+        )
 
     user = result.get("user")
     if not user:
@@ -70,7 +82,13 @@ async def login(request: Request, payload: AuthRequest, db: SupabaseManager = De
     try:
         result = db.sign_in(payload.email, payload.password)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        # SEC-4/SEC-5: same reasoning as signup — a uniform message means
+        # "no such user" and "wrong password" look identical to the client.
+        ref = log_and_get_ref(logger, "Login failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid email or password. (ref: {ref})",
+        )
 
     user = result.get("user")
     return AuthResponse(

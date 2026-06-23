@@ -12,6 +12,7 @@ Public API:
 
 import asyncio
 import os
+import uuid
 from typing import Dict, List, Optional
 
 from src.components.config import Config
@@ -250,8 +251,12 @@ class RAGPipeline:
                 yield event
 
         except Exception as e:
-            logger.exception("pipeline.query_stream failed")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            # SEC-4: str(e) used to go straight into the SSE event sent to
+            # the client — could leak provider error text or internal
+            # details. Log the real error with a reference id instead.
+            error_id = uuid.uuid4().hex[:8]
+            logger.error("[%s] pipeline.query_stream failed: %s", error_id, e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Something went wrong. (ref: {error_id})'})}\n\n"
             yield "data: [DONE]\n\n"
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -12,8 +12,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user, get_pipeline
+from src.api.error_utils import log_and_get_ref
 from src.api.limiter import limiter
+from src.logger import get_logger
 from src.pipeline.pipeline import RAGPipeline
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -75,9 +79,10 @@ async def query(
             filename_filter=payload.filename_filter,
         )
     except Exception as e:
+        ref = log_and_get_ref(logger, "RAG query failed", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"RAG query failed: {e}",
+            detail=f"RAG query failed. (ref: {ref})",
         )
 
     return ChatResponse(

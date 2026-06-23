@@ -206,3 +206,51 @@ When someone uploaded a file, my code said "read the whole thing into memory" wi
 **The fix:** I made the upload reader read the file in small pieces (1MB at a time) and keep a running total. The instant that total goes over a limit (50MB by default), it stops and rejects the upload — so the server never holds more than ~50MB in memory no matter how big the attacker's file claims to be.
 
 **How I proved it:** test uploads a file bigger than the limit. Before the fix: accepted fine (`201`) — proving there was no cap. After the fix: rejected with `413 Payload Too Large`. A normal small file still uploads fine either way.
+
+---
+
+## SEC-4: Raw exception text leaked to clients (and SEC-5: user-enumeration on signup/login)
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+Six places put the real exception text straight into a client-facing response:
+- [auth.py](src/api/router/auth.py) `signup` — `detail=str(e)` (whatever Supabase's error says, e.g. revealing "user already registered")
+- [auth.py](src/api/router/auth.py) `login` — same, on sign-in failure
+- [documents.py](src/api/router/documents.py) `upload_document` — `detail=f"Storage upload failed: {e}"` and `detail=f"Ingestion failed: {e}"`
+- [documents.py](src/api/router/documents.py) `delete_document` — `detail=f"Failed to delete vectors from Pinecone: {e}"`
+- [chat.py](src/api/router/chat.py) `query` — `detail=f"RAG query failed: {e}"`
+- [pipeline.py](src/pipeline/pipeline.py) `query_stream` — `{'type': 'error', 'message': str(e)}` sent as an SSE event
+
+Combined with signup/login specifically (SEC-5): a client could distinguish "this email is already registered" from "wrong password" from "something else broke" just by reading the literal backend error text — useful for an attacker enumerating valid accounts.
+
+### Root Cause
+Each `except Exception as e:` block treated `str(e)` as if it were a safe, user-facing string. It isn't — it can contain Postgres constraint names, provider error text, internal paths, or anything else the underlying library decided to put in its exception message.
+
+### Fix
+1. [src/api/error_utils.py](src/api/error_utils.py) — new `log_and_get_ref(logger, public_message, exc)`: generates a short reference id, logs the *real* exception against that id (with traceback, server-side only), and returns the id so the route can build a generic client message.
+2. Every site listed above now does `ref = log_and_get_ref(logger, "<what failed>", e)` then returns/yields a fixed generic message + `(ref: {ref})` instead of `{e}`. `login`/`signup` specifically collapse to "Invalid email or password" / "Sign-up failed" regardless of the real reason — closing SEC-5 as a side effect of the same fix.
+3. [pipeline.py](src/pipeline/pipeline.py) `query_stream` does the equivalent inline (it's in `src/pipeline`, which `src/api` depends on, not the other way around, so it can't import the API-layer helper — three lines of the same id+log pattern duplicated locally rather than restructuring the dependency direction for one call site).
+4. Added `logger = get_logger(__name__)` to `auth.py`, `documents.py`, `chat.py` — none of them had one before, so there was nowhere to log *to* even if someone had remembered to generalize the message.
+
+### Why this approach
+- A reference id (not just "an error occurred") is the practical middle ground: the client/support flow can say "tell us ref abc123" and you grep the logs for it, without ever putting the real error on the wire.
+- Generalizing `login`/`signup` messages is the standard fix for credential-related endpoints specifically — "invalid email or password" must be the same string whether the email doesn't exist, the password is wrong, or the account is locked, otherwise the response itself is the leak.
+- Didn't touch `documents.py`'s "Failed to delete from storage" message (the one near the top of `delete_document`) — that one's driven by a boolean return value (`storage_deleted`), not a caught exception, so there's no `e` to leak there; out of scope for this specific bug.
+
+### Verification
+Added [tests/test_error_leakage.py](tests/test_error_leakage.py) — 6 tests, one per leak site, each injecting an exception with a distinctive "sensitive" string and asserting it never appears in the response body (or the SSE event, for the streaming case).
+
+- **First version of the test was wrong, not the code:** the sensitive string originally contained `"` characters, which JSON escapes to `\"` in the response body — so a plain substring check passed *even pre-fix*, for the wrong reason (all 6 "passed" against the unmodified code). Caught this by noticing a reproduction test passing on the very first try, which should always be treated as suspicious. Rewrote the sensitive string with no quote/backslash characters and reran.
+- **Before the fix (corrected test):** all 6 failed, each showing the literal sensitive string sitting in the response body/SSE event — confirmed real leaks, not 6 false positives this time.
+- **After the fix:** all 6 pass — generic messages only, real detail confirmed (via the captured log output) to still be logged server-side with its reference id.
+- Full suite: 27 passed. `pyflakes` clean on every changed file.
+
+### Explain it simply (interview answer)
+When something failed on the backend — a database error, a failed API call — my code's habit was "just tell the user exactly what Python's error message says." That sounds helpful, but it's actually leaking internal information: database constraint names, provider error text, sometimes even internal hostnames, straight into a response a random client can read.
+
+It also created a sneakier problem on login and signup specifically: if "wrong password" and "that email doesn't exist" and "your account is locked" all produce *different* error text, an attacker can use that to map out which emails have accounts — even without ever logging in successfully. That's called user enumeration.
+
+**The fix:** instead of showing the user the real error, I generate a short random reference code (like `ref: a1b2c3d4`), write the *real* error to the server logs next to that code, and show the user only a generic message plus that code. If they contact support, support can search the logs for that exact code and see exactly what happened — but a random visitor on the internet just sees "Invalid email or password" and nothing else, every time, no matter what actually went wrong internally.
+
+**How I proved it:** I wrote a test that makes the backend fail with a fake "sensitive" error message, then checks whether that message shows up in the response. Funny enough, my first version of this test was broken — it said "no leak" even on the *original, unfixed* code, because the test string had quote marks in it that get encoded differently in JSON, so my check wasn't really checking anything. A reproduction test passing on the first try is a red flag, not a relief — I fixed the test itself, reran it, and *then* it correctly failed against the broken code and passed after the real fix.
