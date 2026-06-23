@@ -149,7 +149,9 @@ class RAGPipeline:
         ) -> list:
         import asyncio, hashlib as _hashlib
 
-        queries = self.generation_manager.generate_multi_queries(rewritten_query)
+        # BUG-3 fix: generate_multi_queries is now async (it awaits the LLM
+        # call instead of blocking on it) — await it here too.
+        queries = await self.generation_manager.generate_multi_queries(rewritten_query)
 
         # Run all Pinecone searches in parallel — this alone saves 400-600ms
         async def search_one(q):

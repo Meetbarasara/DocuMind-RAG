@@ -283,3 +283,49 @@ Think of Row-Level Security (RLS) as a second lock on every user's data, enforce
 The problem: my backend logs into the database using an admin/service key — like a master key that opens every door in the building, bypassing every individual room lock. So even though I *did* write the RLS policies (the individual room locks), they're never actually checked, because the backend never goes through them. Isolation between users currently depends 100% on my application code remembering to filter by the right user every single time — there's no safety net if I forget.
 
 **Why I didn't just "fix" it:** the real fix means changing *how the backend logs into the database* for every single request — instead of one shared admin key, each request would need to use that specific user's own credentials so the database's locks actually engage. That's a meaningfully bigger, riskier change than a bug patch, and I have no way to verify it actually works without a real, live database with those locks turned on — I don't have one in this environment. So instead of guessing at an authentication rewrite I couldn't test, I audited what's protecting users *today* (confirmed it's consistent), wrote up the real residual risk in plain terms, and gave the decision — and its tradeoffs — back to the person who owns that call, instead of quietly picking one myself.
+
+---
+
+## BUG-3: Synchronous LLM calls inside async methods block the event loop
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+Three places in [generation.py](src/components/generation.py) called LangChain's *synchronous* `chain.invoke()`/`chain.stream()` from inside `async def` methods on a server that's supposed to handle many users concurrently:
+- `generate()` — `answer = self.chain.invoke({...})`
+- `generate_stream()` — `stream = self.chain.stream({...})` then a plain `for chunk in stream:`
+- `generate_multi_queries()` — wasn't even `async def`; `result = chain.invoke({...})` inside a regular `def`
+
+A sync call doesn't yield control back to FastAPI's single-threaded event loop — it just blocks it for the entire duration of the call (an HTTP round-trip to OpenAI, often hundreds of milliseconds to seconds). While one request is inside that call, the event loop can't make progress on *any other* request, including the streaming one that's supposed to be delivering tokens in real time. Two users talking to the bot "at the same time" were actually fully serialized.
+
+### Root Cause
+LangChain Runnables expose both a sync (`invoke`/`stream`) and async (`ainvoke`/`astream`) interface. `rewrite_query()` already used `ainvoke` correctly; these three call sites didn't, despite living inside async methods — the sync call still runs to completion, it just does so by monopolizing the event loop instead of yielding to it.
+
+### Fix
+1. [generation.py](src/components/generation.py) `generate()` — `self.chain.invoke(...)` → `await self.chain.ainvoke(...)`.
+2. [generation.py](src/components/generation.py) `generate_stream()` — `self.chain.stream(...)` + `for chunk in stream:` → `async for chunk in self.chain.astream(...):`.
+3. [generation.py](src/components/generation.py) `generate_multi_queries()` — made it `async def`, `chain.invoke(...)` → `await chain.ainvoke(...)`.
+4. [pipeline.py](src/pipeline/pipeline.py) `_multi_query_retrieve_async` — its one caller; added the matching `await`.
+
+### Why this approach
+Same principle as BUG-1: match the caller to the callee's real (async) contract rather than changing the callee. The chain is built once in `__init__`; swapping `invoke`/`stream` for `ainvoke`/`astream` is a same-behavior, same-prompt, same-output change — only *how* the wait happens differs (cooperative vs. blocking).
+
+### Verification
+Added [tests/test_bug3_async_llm_calls.py](tests/test_bug3_async_llm_calls.py) — a `FakeChain` whose sync methods do a real blocking `time.sleep` and whose async methods do `asyncio.sleep` (which actually yields). Each test runs **two calls concurrently** via `asyncio.gather` and checks the *wall-clock time*: truly concurrent calls finish in ~1x one call's delay; blocking calls serialize to ~2x.
+
+- **Before the fix:**
+  - `generate()`: 2 concurrent calls took `0.40s` against a `0.30s` threshold (expected ~`0.20s` if non-blocking) — serialized.
+  - `generate_stream()`: same — `0.40s`, serialized.
+  - `generate_multi_queries()`: failed differently — `TypeError: unhashable type: 'list'` from `asyncio.gather()`, because the function wasn't `async def` yet, so calling it just ran synchronously and handed `gather()` two plain lists instead of two coroutines. A different failure mode than the other two, but the same underlying bug, and just as clearly "red."
+  - Side note: monkeypatching `generator.llm.invoke` directly (as an *instance* attribute) doesn't work for testing the multi-query case — `ChatOpenAI` is a Pydantic model and raises `ValueError: "ChatOpenAI" object has no field "invoke"` rather than allowing it. Had to patch the *class* method via `monkeypatch.setattr(type(generator.llm), "invoke", ...)` instead, which Pydantic doesn't intercept.
+- **After the fix:** all 3 pass — both timing-based tests finish in ~0.2s instead of ~0.4s, and the multi-query test now gathers two real coroutines successfully.
+- Full suite: 30 passed. `pyflakes` clean on every changed file (3 pre-existing unused-import warnings in `generation.py`/`pipeline.py` predate this change and are unrelated).
+
+### Explain it simply (interview answer)
+Picture a single waiter (the event loop) serving every table (every user's request) in a restaurant. A `sync` call is like the waiter standing at the kitchen window, arms crossed, refusing to serve anyone else until *this one order* is fully cooked — even though the kitchen (OpenAI's API) is perfectly capable of cooking multiple orders at once if the waiter would just go take other tables' orders in the meantime. An `async` call is the waiter handing the ticket to the kitchen and immediately going to serve someone else, coming back only when that order's ready.
+
+My code had the waiter standing at the window for three different parts of generating an answer — the main answer, the streamed tokens, and a side step that rewrites the search query a few different ways. Two users chatting "at the same time" were actually being served one after another, fully blocked, even though the whole point of using `async`/streaming was to handle many people at once.
+
+**The fix:** swap the blocking calls (`invoke`, `stream`) for their async counterparts (`ainvoke`, `astream`) that LangChain already provides — same prompt, same model, same answer, just "go do something else while waiting" instead of "stand and stare at the kitchen."
+
+**How I proved it:** I built a fake stand-in for the LLM call where the *sync* version does a real blocking 0.2-second pause and the *async* version does a real non-blocking 0.2-second pause, then fired two calls at once and timed it. Blocked: ~0.4 seconds (one after the other). Fixed: ~0.2 seconds (genuinely overlapping). That's a measurable, not just theoretical, proof of the difference. One of the three sub-cases also failed in an unexpected way the first time — Python's plain `gather()` choked because the function wasn't even `async` yet, which was just as valid a "this is broken" signal, in its own way.

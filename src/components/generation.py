@@ -153,7 +153,7 @@ class AnswerGeneration:
 
     # ── Feature C: Multi-Query Generation ─────────────────────────────────
 
-    def generate_multi_queries(self, query: str) -> List[str]:
+    async def generate_multi_queries(self, query: str) -> List[str]:
         """Generate diverse reformulations of *query* for multi-query retrieval.
 
         Uses a single LLM call to produce ``config.MULTI_QUERY_COUNT`` variant
@@ -175,7 +175,10 @@ class AnswerGeneration:
             ])
             chain = multi_prompt | self.llm | StrOutputParser()
 
-            result = chain.invoke({
+            # BUG-3 fix: chain.invoke() blocks the event loop for the full
+            # LLM round-trip; ainvoke() awaits it instead, letting other
+            # requests run concurrently in the meantime.
+            result = await chain.ainvoke({
                 "query": query,
                 "count": self.config.MULTI_QUERY_COUNT,
             })
@@ -316,7 +319,10 @@ class AnswerGeneration:
         """
         context, sources = self._build_context_and_sources(retrieved_docs)
 
-        answer = self.chain.invoke({
+        # BUG-3 fix: chain.invoke() is a blocking call inside this async
+        # method — it would freeze FastAPI's event loop for the entire LLM
+        # round-trip, serializing concurrent requests. ainvoke() awaits it.
+        answer = await self.chain.ainvoke({
             "context": context,
             "question": query,
             "chat_history": await self._format_history(chat_history) if chat_history else "",
@@ -364,14 +370,18 @@ class AnswerGeneration:
         # 2. Stream LLM tokens
         full_answer = ""
         chat_history_str = await self._format_history(chat_history) if chat_history else ""
-        stream = self.chain.stream({
-            "context": context,
-            "question": query,
-            "chat_history": chat_history_str,
-        })
 
+        # BUG-3 fix: self.chain.stream(...) is a *sync* iterator — pulling
+        # from it with a plain `for` blocks the event loop on every single
+        # token, serializing every concurrent request and defeating the
+        # point of SSE streaming. astream() + `async for` yields control
+        # back between tokens instead.
         try:
-            for chunk in stream:
+            async for chunk in self.chain.astream({
+                "context": context,
+                "question": query,
+                "chat_history": chat_history_str,
+            }):
                 text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
                 if text_chunk:
                     full_answer += text_chunk
