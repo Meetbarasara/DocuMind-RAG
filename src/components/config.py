@@ -85,6 +85,8 @@ class Config:
     SUPPORTED_FILE_TYPES: tuple = (
         "pdf", "docx", "pptx", "txt", "xlsx", "csv", "html",
     )
+    # SEC-6: cap upload size so a single request can't exhaust memory/CPU.
+    MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50MB
 
     # ── API server settings ───────────────────────────────────────────
     API_HOST: str = "0.0.0.0"

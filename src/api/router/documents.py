@@ -8,14 +8,17 @@ Endpoints:
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 
 from src.api.dependencies import get_current_user, get_db, get_pipeline
+from src.api.limiter import limiter
 from src.components.database import SupabaseManager
 from src.pipeline.pipeline import RAGPipeline
 from src.utils import sanitize_filename
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1MB
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -32,13 +35,39 @@ def _validate_extension(filename: str, supported: tuple) -> None:
         )
 
 
+async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
+    """Read *file* in chunks, aborting as soon as *max_bytes* is exceeded.
+
+    SEC-6: the previous `await file.read()` buffered the entire upload into
+    memory regardless of size, with no cap — a few large uploads could
+    exhaust server memory/CPU (DoS). Reading in bounded chunks caps actual
+    memory use at roughly max_bytes instead of the attacker's chosen size.
+    """
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"File exceeds the {max_bytes // (1024 * 1024)}MB upload limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Routes
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
     db: SupabaseManager = Depends(get_db),
@@ -63,7 +92,7 @@ async def upload_document(
     _validate_extension(safe_filename, config.SUPPORTED_FILE_TYPES)
 
     user_id = str(current_user["user"].id)
-    file_bytes = await file.read()
+    file_bytes = await _read_upload_within_limit(file, config.MAX_UPLOAD_SIZE_BYTES)
     file_size = len(file_bytes)
     ext = Path(safe_filename).suffix.lstrip(".").lower()
 

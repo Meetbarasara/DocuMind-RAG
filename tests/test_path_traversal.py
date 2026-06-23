@@ -63,6 +63,7 @@ class FakePipeline:
         self.config = SimpleNamespace(
             SUPPORTED_FILE_TYPES=("pdf", "docx", "pptx", "txt", "xlsx", "csv", "html"),
             UPLOAD_DIR=upload_dir,
+            MAX_UPLOAD_SIZE_BYTES=50 * 1024 * 1024,
         )
         self.ingest_calls = []
         self.delete_calls = []

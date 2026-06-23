@@ -7,11 +7,12 @@ Endpoints:
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user, get_pipeline
+from src.api.limiter import limiter
 from src.pipeline.pipeline import RAGPipeline
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -47,7 +48,9 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/query", response_model=ChatResponse)
+@limiter.limit("20/minute")
 async def query(
+    request: Request,
     payload: ChatRequest,
     current_user: dict = Depends(get_current_user),
     pipeline: RAGPipeline = Depends(get_pipeline),
@@ -87,7 +90,9 @@ async def query(
 
 
 @router.post("/query/stream")
+@limiter.limit("20/minute")
 async def query_stream(
+    request: Request,
     payload: ChatRequest,
     current_user: dict = Depends(get_current_user),
     pipeline: RAGPipeline = Depends(get_pipeline),

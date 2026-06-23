@@ -7,10 +7,11 @@ Endpoints:
     GET  /api/auth/me      — return current user info
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 
 from src.api.dependencies import get_current_user, get_db
+from src.api.limiter import limiter
 from src.components.database import SupabaseManager
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -40,7 +41,8 @@ class AuthResponse(BaseModel):
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def signup(payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
+@limiter.limit("5/minute")
+async def signup(request: Request, payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
     """Register a new user account."""
     try:
         result = db.sign_up(payload.email, payload.password)
@@ -62,7 +64,8 @@ async def signup(payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(request: Request, payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
     """Authenticate a user and return JWT tokens."""
     try:
         result = db.sign_in(payload.email, payload.password)
