@@ -329,3 +329,88 @@ My code had the waiter standing at the window for three different parts of gener
 **The fix:** swap the blocking calls (`invoke`, `stream`) for their async counterparts (`ainvoke`, `astream`) that LangChain already provides — same prompt, same model, same answer, just "go do something else while waiting" instead of "stand and stare at the kitchen."
 
 **How I proved it:** I built a fake stand-in for the LLM call where the *sync* version does a real blocking 0.2-second pause and the *async* version does a real non-blocking 0.2-second pause, then fired two calls at once and timed it. Blocked: ~0.4 seconds (one after the other). Fixed: ~0.2 seconds (genuinely overlapping). That's a measurable, not just theoretical, proof of the difference. One of the three sub-cases also failed in an unexpected way the first time — Python's plain `gather()` choked because the function wasn't even `async` yet, which was just as valid a "this is broken" signal, in its own way.
+
+---
+
+## BUG-6: Re-ranking ran once *per sub-query*, before the multi-query merge, instead of once after
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+`RetrievalManager.retrieve()` does hybrid search → dedup → re-rank, cutting to `RERANKER_TOP_K` (3) *inside that single call*. Multi-query retrieval ([pipeline.py](src/pipeline/pipeline.py) `_multi_query_retrieve_async`) generates ~4 query variants and called `.retrieve()` once per variant, *then* merged the results. So:
+- Each sub-query's results were independently re-ranked and truncated to top-3 **before** the merge ever happened — the final pool was a union of four independent top-3s (≤12 docs), not a global top-3 chosen from everything retrieved.
+- The cross-encoder (a real, comparatively slow model call) ran 4 times instead of once, on tiny 3-15 doc batches each, instead of once over the full candidate pool.
+- A chunk that was, say, the 4th-best match for sub-query A but never showed up at all for sub-queries B/C/D could outscore everything in sub-query A's surviving top-3 — and it would never get the chance, because it was discarded before any cross-sub-query comparison was possible.
+
+### Root Cause
+`retrieve()` bundled three separable steps (retrieve, dedup, rerank) into one method with no way to run the first two without the third. The multi-query caller needed "retrieve `+` dedup, merge across sub-queries, *then* rerank" but only had "retrieve `+` dedup `+` rerank" available per sub-query.
+
+### Fix
+1. [retrieval.py](src/components/retrieval.py) — split `retrieve()` into:
+   - `retrieve_candidates(query, filename_filter)` — hybrid search + dedup, **no** re-ranking.
+   - `rerank(query, docs)` — public wrapper around the existing cross-encoder logic.
+   - `retrieve()` — now just `self.rerank(query, self.retrieve_candidates(query, filename_filter))`, unchanged behavior/signature for any single-query caller.
+2. [pipeline.py](src/pipeline/pipeline.py) `_multi_query_retrieve_async` — each sub-query now calls `retrieve_candidates()` (full set, untruncated) instead of `retrieve()`; after merging/deduping across all sub-queries, calls `rerank()` **once** on the complete merged pool, using the original rewritten query (not any one sub-query). Wrapped in `run_in_executor` like the retrieval calls above it — the cross-encoder is a blocking CPU call, and leaving it on the event loop would reintroduce the exact class of problem BUG-3 just fixed.
+
+### Why this approach
+Splitting `retrieve()` rather than adding a parameter (e.g. `retrieve(query, skip_rerank=True)`) keeps each method doing one thing — `retrieve_candidates` and `rerank` are each independently meaningful and testable, and `retrieve()` becomes a two-line composition instead of a conditional branch. Single-query callers (the `if __name__ == "__main__"` smoke test, anything not doing multi-query) are unaffected — same inputs, same outputs.
+
+### Verification
+Added [tests/test_multiquery_rerank_order.py](tests/test_multiquery_rerank_order.py) with a fake `retrieval_manager` exposing *both* the old and new interfaces, so the same double works for the red and green runs:
+- **Before the fix:** `retrieve_calls == ["q1", "q2", "q3"]` (the old per-sub-query path was used) and `rerank_calls` was empty — failed on the first assertion.
+- **After the fix:** `retrieve_candidates_calls == ["q1", "q2", "q3"]`, `retrieve_calls == []`, and `rerank_calls` has exactly **one** entry containing all `3 × 5 = 15` merged candidates (not a pre-truncated 9).
+
+### Explain it simply (interview answer)
+Imagine asking four friends to each separately go pick "the best 3 apples" from a shared bin, then just dumping all twelve picks together and calling that your final answer — instead of asking all four to bring back a handful of *candidates* each, pooling everyone's candidates into one pile, and *then* picking the best 3 from the whole pile. The first way, a genuinely great apple that one friend almost picked (but had two even better ones in hand already) never even makes it into the room. The second way, every apple gets a fair, single, head-to-head comparison against every other apple before anything gets thrown away.
+
+My retrieval code generates a few different phrasings of the user's question (to catch results a single phrasing might miss), searches for each one, and was — for each phrasing separately — already narrowing down to "the best 3" *before* combining the results from all the phrasings. That meant the final 3-12 results were never actually compared against each other properly, and the expensive "which result is really the best" model ran four times instead of once.
+
+**The fix:** let each phrasing bring back its full set of candidates, unsorted-by-quality, pool everything together, remove duplicates, and *then* run the "pick the best" comparison exactly once over the complete pool.
+
+**How I proved it:** I wrote a test that hands the code 3 fake phrasings, each capable of returning 5 fake documents (15 total). I checked two things: did the "final pick" step get called once or four times, and how many documents did it see when it ran? Before the fix, my fake "old" retrieval method (which simulates the bug — pre-shrinking to 3 before any merge) is what got called, and the "final pick" step never ran at all. After the fix, the final pick step ran exactly once, and it saw all 15 candidates, not a pre-shrunk 9.
+
+---
+
+## BUG-4 & BUG-5: BM25 keyword index was per-process and overwrite-only
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[retrieval.py](src/components/retrieval.py) `update_bm25_index(documents)` was called once per upload with that upload's chunks, and:
+- (**BUG-5**) it *replaced* `self._bm25_docs` wholesale — uploading a second file dropped the first file's keyword coverage entirely. Even within a single, never-restarted process, BM25 only ever covered the most recently ingested document.
+- (**BUG-4**) it only ever ran in the one process that happened to handle a given upload's HTTP request — after a restart, on a different `uvicorn --workers N` process, or simply querying a document uploaded in an earlier session, the new process's `RetrievalManager` starts with `_bm25_retriever = None` and nothing ever populates it (since no upload event happens to run on it specifically), so hybrid search silently and permanently falls back to dense-only.
+
+### Root Cause
+The index was modeled as "whatever the most recent upload, on this process, handed me" instead of "everything currently in this namespace" — the former is neither accumulative nor shared across processes; the latter (which is what Pinecone itself already correctly tracks) is both.
+
+### Fix
+1. [retrieval.py](src/components/retrieval.py) — replaced `update_bm25_index(documents)` with:
+   - `invalidate_bm25_index()` — marks the index stale (just sets a flag, no rebuild work).
+   - `_ensure_bm25_index()` — lazily rebuilds it, *from Pinecone*, the first time it's needed after being marked stale. Fetches everything currently in the namespace via `vectorstore.similarity_search(query="", k=10_000, filter=None)` — the same "dummy query, large k" pattern `delete_document_by_filename` already uses elsewhere in this file, since the Pinecone client here has no plain "list everything" call.
+   - `_hybrid_retrieve` calls `_ensure_bm25_index()` instead of just checking `self._bm25_retriever is None`.
+2. [pipeline.py](src/pipeline/pipeline.py) — `ingest_file` now calls `invalidate_bm25_index()` (not `update_bm25_index(docs)`); `delete_document` now *also* calls `invalidate_bm25_index()`, which it never did before (a deleted document's chunks would otherwise linger in keyword search results indefinitely).
+
+### Why this approach
+Once BM25 is treated as a cached, lazily-rebuilt *view* of Pinecone rather than a separately-maintained, upload-event-driven cache, both bugs disappear as a side effect of the same mechanism — a fresh process has no special "cold" problem because it just rebuilds from the same shared source of truth every other process already reads from, and a second upload can't drop the first file's coverage because the rebuild always pulls *everything*, not just what changed. No new infrastructure (no Pinecone sparse vectors, no separate persistent store) — just stopped treating in-process memory as if it were the source of truth when Pinecone already was one.
+
+This doesn't make BM25 free — the first hybrid search after a process starts (or after any ingest/delete) pays a rebuild. For the chunk volumes a per-user RAG app like this handles, that's a reasonable, bounded cost; it would need revisiting if namespaces grew into the tens of thousands of chunks.
+
+### Verification
+Added [tests/test_bm25_lifecycle.py](tests/test_bm25_lifecycle.py). Constructing a real `RetrievalManager` isn't safe here — its `__init__` builds a real `PineconeVectorStore`, which makes an actual HTTP call to Pinecone's control plane immediately (confirmed empirically: a fake API key gets a real `401 Unauthorized` from Pinecone's servers, not a harmless local no-op). Built it via `RetrievalManager.__new__(...)` instead, bypassing `__init__`, and injected a fake vectorstore — testing the real method bodies, just with the one genuinely network-bound dependency swapped out.
+
+Inspected `_bm25_docs` directly rather than `_hybrid_retrieve`'s merged output — dense search isn't stale (it always reads current Pinecone data), so a merged-output-only test could pass for the wrong reason, with dense search quietly masking a completely broken BM25 component.
+
+- **Before the fix:** both tests failed immediately with `AttributeError: 'RetrievalManager' object has no attribute '_ensure_bm25_index'` — the methods didn't exist yet.
+- **After the fix:**
+  - Uploading file1 then file2 (simulated by changing the fake vectorstore's contents and calling `invalidate_bm25_index()`) leaves BM25 covering **both** files' keywords, not just file2's.
+  - A brand-new `RetrievalManager` that never had any upload event run on it directly still sees both files' content on its very first BM25 build, because it pulls from the shared fake "Pinecone," not from any process-local history.
+- Full suite: 33 passed. `pyflakes` clean on every changed file (one pre-existing unrelated unused-import warning in `retrieval.py`, predates this change).
+
+### Explain it simply (interview answer)
+Picture a library where, every time a new shipment of books arrives, the front desk throws away the *entire* card catalog and makes a brand new one — but only using cards for the books in *that* shipment. Yesterday's books are still on the shelves, perfectly fine, but they've vanished from the catalog. And if the library ever closes and reopens with a different person at the front desk, that new person has no catalog at all until the next shipment happens to arrive while they're on duty.
+
+That's what my keyword-search index was doing: rebuilding itself only from whatever was *just* uploaded, in memory, in whichever specific server process happened to handle that one upload.
+
+**The fix:** stop treating "the most recent upload" as the source of truth, and treat the *actual database* (Pinecone, where every chunk really lives permanently) as the source of truth instead. Now, whenever the catalog might be out of date (after an upload or a deletion), I just mark it stale — and the next time anyone needs it, the code walks the actual shelves (queries Pinecone for everything in that namespace) and rebuilds the whole catalog from what's really there. A brand-new front-desk person — a freshly restarted server, or a different worker process — gets the *exact same correct catalog* the moment they need it, because they're reading from the real shelves, not from a previous person's notes.
+
+**How I proved it:** I simulated "upload file 1, then upload file 2" and checked whether file 1's words were still searchable afterward (they weren't, pre-fix — confirmed the bug). Then I simulated "a brand new instance that never personally handled any upload" and checked whether it could immediately find content from files it never saw uploaded — proving the fresh-process/different-worker scenario specifically, not just the "two uploads in a row" scenario.

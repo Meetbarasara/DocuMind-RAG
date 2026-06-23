@@ -117,17 +117,18 @@ class RAGPipeline:
                 "Upserted %d chunks to Pinecone (namespace=%s)", len(docs), effective_namespace
             )
 
-            # ── Step 3: Update BM25 index for hybrid search ──────────────
-            # Bug 4 fix: the BM25 index was never populated after ingestion,
-            # so hybrid search always fell back silently to dense-only retrieval.
-            # Now we rebuild the index on the correct per-namespace manager.
+            # ── Step 3: Invalidate BM25 index for hybrid search ──────────
+            # BUG-4/5 fix: this used to call update_bm25_index(docs), which
+            # *replaced* the index with only this upload's chunks — a
+            # second upload silently dropped the first file's keyword
+            # coverage, and the index was empty after a restart or on a
+            # different worker. Invalidating instead means the next query
+            # rebuilds the full index straight from Pinecone (every chunk
+            # in the namespace, not just whatever this process happened to
+            # upload).
             if self.config.USE_HYBRID_SEARCH:
                 retrieval_manager = self._get_retrieval_manager(effective_namespace)
-                retrieval_manager.update_bm25_index(docs)
-                logger.info(
-                    "BM25 index updated for namespace=%s (%d docs)",
-                    effective_namespace, len(docs),
-                )
+                retrieval_manager.invalidate_bm25_index()
 
             return len(docs)
 
@@ -154,11 +155,14 @@ class RAGPipeline:
         queries = await self.generation_manager.generate_multi_queries(rewritten_query)
 
         # Run all Pinecone searches in parallel — this alone saves 400-600ms
+        # BUG-6 fix: retrieve_candidates() (not retrieve()) — no per-query
+        # re-ranking/truncation here, so nothing is thrown away before the
+        # merge below sees every sub-query's full candidate set.
         async def search_one(q):
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(
                 None,
-                lambda: retrieval_manager.retrieve(q, filename_filter=filename_filter)
+                lambda: retrieval_manager.retrieve_candidates(q, filename_filter=filename_filter)
                 )
 
         results = await asyncio.gather(*[search_one(q) for q in queries])
@@ -173,7 +177,19 @@ class RAGPipeline:
                     all_docs.append(doc)
 
         logger.info("Parallel multi-query: %d queries → %d unique docs", len(queries), len(all_docs))
-        return all_docs
+
+        # BUG-6 fix: re-rank ONCE over the full merged pool (using the
+        # original rewritten query, not any individual sub-query), instead
+        # of each sub-query independently re-ranking+truncating before the
+        # merge ever happened. Cuts the cross-encoder from N calls to 1 and
+        # lets it choose from the complete candidate set. Off the event
+        # loop via run_in_executor, same as the retrieval calls above —
+        # the cross-encoder is a blocking CPU call.
+        loop = asyncio.get_event_loop()
+        reranked = await loop.run_in_executor(
+            None, lambda: retrieval_manager.rerank(rewritten_query, all_docs)
+        )
+        return reranked
 
 
     async def query(
@@ -275,6 +291,11 @@ class RAGPipeline:
         try:
             retrieval_manager = self._get_retrieval_manager(namespace)
             retrieval_manager.delete_document_by_filename(filename)
+            # BUG-4/5 fix: the BM25 index is a cached view of "everything
+            # in Pinecone right now" — invalidate it so deleted chunks
+            # don't linger in keyword search results until some later
+            # upload happens to trigger a rebuild.
+            retrieval_manager.invalidate_bm25_index()
             logger.info("Deleted Pinecone vectors for %s (namespace=%s)", filename, namespace)
         except Exception as e:
             logger.exception("delete_document failed for %s", filename)

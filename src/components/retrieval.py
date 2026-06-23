@@ -47,34 +47,65 @@ class RetrievalManager:
         # ── Feature A: BM25 Hybrid Search ────────────────────────────────
         self._bm25_retriever = None
         self._bm25_docs: List[Document] = []
+        # BUG-4/5 fix: start "dirty" so the first hybrid search rebuilds the
+        # index from Pinecone instead of staying empty until an upload
+        # happens to occur in *this* process — see _ensure_bm25_index.
+        self._bm25_dirty = True
 
         # ── Feature B: Cross-Encoder Re-ranking (lazy-loaded) ────────────
         self._cross_encoder = None
 
     # ── Feature A: BM25 Index Management ──────────────────────────────────
 
-    def update_bm25_index(self, documents: List[Document]) -> None:
-        """Rebuild the in-memory BM25 index from *documents*.
+    def invalidate_bm25_index(self) -> None:
+        """Mark the BM25 index stale so it's rebuilt from Pinecone on next use.
 
-        Called after ingestion so hybrid search can combine keyword + dense
-        retrieval. This is a lightweight in-memory index — no persistence.
+        BUG-4/5 fix: the index used to be populated directly from whichever
+        documents were just uploaded — overwritten (not accumulated) on
+        each call, and only ever present in the one process that handled
+        that specific upload. Call this after any ingest/delete; the next
+        hybrid search lazily rebuilds the *entire* index straight from
+        Pinecone (the real source of truth for "every chunk in this
+        namespace"), so it's always complete and correct regardless of
+        which process or worker handled the original upload.
         """
-        if not documents:
+        self._bm25_dirty = True
+
+    def _ensure_bm25_index(self) -> None:
+        """Lazily (re)build the BM25 index from everything in Pinecone.
+
+        No-op if the index isn't marked dirty. Fetches the full namespace
+        via the same "dummy query, large k" pattern already used by
+        delete_document_by_filename, since Pinecone doesn't otherwise
+        expose a plain "list everything" call through this client.
+        """
+        if not self._bm25_dirty:
             return
 
         try:
             from langchain_community.retrievers import BM25Retriever
 
-            self._bm25_docs = documents
-            self._bm25_retriever = BM25Retriever.from_documents(
-                documents, k=self.config.TOP_K
+            all_docs = self.vectorstore.similarity_search(
+                query="", k=10_000, filter=None,
             )
-            logger.info("BM25 index rebuilt with %d documents", len(documents))
+            self._bm25_docs = all_docs
+            self._bm25_retriever = (
+                BM25Retriever.from_documents(all_docs, k=self.config.TOP_K)
+                if all_docs else None
+            )
+            self._bm25_dirty = False
+            logger.info("BM25 index rebuilt from Pinecone: %d documents", len(all_docs))
         except ImportError:
             logger.warning(
                 "langchain_community not installed — BM25 hybrid search disabled. "
                 "Install with: pip install langchain-community rank_bm25"
             )
+            self._bm25_retriever = None
+            self._bm25_dirty = False
+        except Exception as e:
+            # Leave _bm25_dirty=True so the next query retries the rebuild
+            # instead of silently running dense-only forever on a blip.
+            logger.warning("BM25 index rebuild failed, using dense only this query: %s", e)
             self._bm25_retriever = None
 
     # ── Feature B: Cross-Encoder Re-ranking ───────────────────────────────
@@ -227,8 +258,15 @@ class RetrievalManager:
         # Always run dense search
         dense_docs = self._dense_retrieve(query, filename_filter)
 
-        # If BM25 is not available or disabled, return dense only
-        if not self.config.USE_HYBRID_SEARCH or self._bm25_retriever is None:
+        if not self.config.USE_HYBRID_SEARCH:
+            return dense_docs
+
+        # BUG-4/5 fix: rebuild from Pinecone if stale (first use, or after
+        # an ingest/delete called invalidate_bm25_index()) instead of
+        # relying solely on whatever update_bm25_index() happened to be
+        # called with in this process.
+        self._ensure_bm25_index()
+        if self._bm25_retriever is None:
             return dense_docs
 
         # Run BM25 search
@@ -282,8 +320,46 @@ class RetrievalManager:
 
     # ── Public Retrieval API ──────────────────────────────────────────────
 
-    def retrieve(self, query: str, filename_filter: str = None):
-        """Search Pinecone for documents similar to *query*.
+    def retrieve_candidates(self, query: str, filename_filter: str = None) -> List[Document]:
+        """Hybrid search + dedup, deliberately WITHOUT re-ranking (BUG-6).
+
+        Used by multi-query retrieval so each sub-query contributes its
+        full candidate set to a global merge across all sub-queries; the
+        caller re-ranks once over that merged pool via :meth:`rerank`.
+        Calling :meth:`retrieve` (which reranks and truncates to
+        ``RERANKER_TOP_K`` *per sub-query*) here would throw away
+        candidates before the merge ever happens and run the cross-encoder
+        N times instead of once.
+
+        Args:
+            query:           The user's question or search string.
+            filename_filter: If set, only return chunks from this filename.
+
+        Returns:
+            List of ``Document`` objects, de-duplicated but not re-ranked.
+        """
+        try:
+            docs = self._hybrid_retrieve(query, filename_filter)
+            logger.info(
+                "Retrieved %d docs above threshold (%.2f)",
+                len(docs), self.config.SIMILARITY_THRESHOLD,
+            )
+            return self._deduplicate_chunks(docs)
+        except Exception as e:
+            logger.error("Retrieval failed: %s", e)
+            return []
+
+    def rerank(self, query: str, docs: List[Document]) -> List[Document]:
+        """Cross-encoder re-rank *docs* against *query* (Feature B).
+
+        Public entry point for :meth:`_rerank_documents` — exposed
+        separately from :meth:`retrieve` so multi-query retrieval can run
+        it once over a merged candidate pool (BUG-6).
+        """
+        return self._rerank_documents(query, docs)
+
+    def retrieve(self, query: str, filename_filter: str = None) -> List[Document]:
+        """Search Pinecone for documents similar to *query* (single query).
 
         Pipeline: Hybrid Search (A) → Chunk Dedup (E) → Re-rank (B)
 
@@ -294,26 +370,7 @@ class RetrievalManager:
         Returns:
             List of ``Document`` objects, de-duplicated and re-ranked.
         """
-        try:
-            # Step 1: Retrieve (hybrid or dense-only)
-            docs = self._hybrid_retrieve(query, filename_filter)
-
-            logger.info(
-                "Retrieved %d docs above threshold (%.2f)",
-                len(docs), self.config.SIMILARITY_THRESHOLD,
-            )
-
-            # Step 2: Deduplicate near-overlapping chunks (Feature E)
-            docs = self._deduplicate_chunks(docs)
-
-            # Step 3: Re-rank with cross-encoder (Feature B)
-            docs = self._rerank_documents(query, docs)
-
-            return docs
-
-        except Exception as e:
-            logger.error("Retrieval failed: %s", e)
-            return []
+        return self.rerank(query, self.retrieve_candidates(query, filename_filter))
 
     # ── Deletion ──────────────────────────────────────────────────────────
 
