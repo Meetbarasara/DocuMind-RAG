@@ -569,3 +569,65 @@ Uploading a file in this app is really four separate steps talking to three diff
 **The fix:** if a later step fails, go back and best-effort undo the earlier steps that already succeeded — delete the stored file, delete the half-created search vectors — instead of leaving them behind as orphaned data nobody can see or clean up. And stop telling the user "success" when the step that makes the file actually *visible* to them never happened.
 
 **How I proved it:** I simulated each failure point separately (ingestion fails; metadata-recording fails) and checked whether the earlier successful steps got cleaned up afterward. Before the fix: they didn't, in either case. After the fix: each failure triggers exactly the right cleanup, and — importantly — a fully successful upload still doesn't trigger any unnecessary cleanup calls at all.
+
+---
+
+## SEC-1 and SEC-5: already resolved earlier (noted here for the record)
+
+Two items the review numbered separately turned out to already be handled by the time they were revisited:
+
+- **SEC-1** ("`filename_filter` never applied in retrieval") was investigated when first reached and the review's own text retracts it on closer reading: the filter *is* correctly threaded through, no real leak was found. Documented in the SEC-2 entry above rather than given its own entry, since there was nothing to fix.
+- **SEC-5** ("login/signup error text enables user-enumeration") was closed as a direct side effect of the SEC-4 fix — making login/signup return one fixed generic message regardless of the real failure reason closes the enumeration vector at the same time it stops leaking raw exception text. See the SEC-4 entry above.
+
+---
+
+## SEC-8: `print()` statements bypassed the configured logger
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[ingestion.py](src/components/ingestion.py) (parsing progress, chunk counts, the one real error case) and `_log_elements_analysis` in [utils.py](src/utils.py) (element-type breakdown) used `print()` instead of the app's configured logger. In production, this bypasses log levels, log rotation, and whatever output capture/aggregation the deployment relies on — it goes straight to stdout regardless of how logging is configured.
+
+### Fix
+Added a logger to `ingestion.py` (it didn't have one) and converted every `print()` in the two real, reachable methods (`process_documents`, `build_langchain_documents`) and in `_log_elements_analysis` to `logger.debug(...)` for routine progress, and `logger.error(..., exc_info=True)` for the one actual failure case. Left the `if __name__ == "__main__":` smoke-test block's prints untouched — it's a manual CLI debugging tool a developer runs directly, never reached by the running application, so it's not a "production logging" concern.
+
+None of the converted calls log raw chunk/document content (`doc.page_content`, etc.) — they're all counts and status strings, both before and after. The one place that *does* print actual content (`doc.page_content[:120]` in the `__main__` block) was intentionally left alone for the same reason.
+
+### Verification
+Added [tests/test_ingestion_logging.py](tests/test_ingestion_logging.py):
+- Two runtime tests (using pytest's `capsys`/`caplog`) drive the parts that don't need real `unstructured` internals: `_log_elements_analysis` directly (works fine with a duck-typed fake element), and `process_documents`'s error path (an unsupported extension fails before any real file parsing is attempted, so it needs no mocking). **Before the fix:** both wrote to stdout and nothing reached the log records. **After:** nothing on stdout, the expected record is in `caplog`.
+- A third test does a static check (reads the source, asserts no `print(` appears before the `if __name__ ==` line) for the remaining conversions inside `build_langchain_documents` — those run through `chunk_by_title`, which expects real `unstructured` element internals that aren't worth faking just to exercise a print-vs-log change with no logic difference.
+
+### Explain it simply (interview answer)
+My code used `print()` — the same thing you'd use in a quick throwaway script — for real status messages in a server that's supposed to run unattended in production. The problem: `print()` always goes straight to the terminal/stdout, completely bypassing whatever logging setup the app actually has (log levels, log files that rotate so they don't fill up the disk, whatever monitoring tool is supposed to be watching the *logs*, not raw terminal output).
+
+**The fix:** swap every one of those `print()` calls for the proper logger, at the right level — routine progress as `debug` (so it's there if you need it but doesn't spam normal output), the one real error case as `error` (with the actual exception attached, not just its text). Left one obviously-a-debugging-script's prints alone, since that's a tool a developer runs by hand, not something the live application ever executes.
+
+**How I proved it:** used a pytest feature that captures anything written to stdout, then checked it was empty after running the code — and separately checked the *logger* actually received the message. Before the fix: stdout had content, the logger had nothing. After: the reverse.
+
+---
+
+## SEC-9: A missing service-role key silently downgraded security instead of failing to start
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[database.py](src/components/database.py) `SupabaseManager.__init__` fell back to the anon-key client for `service_client` if `SUPABASE_SERVICE_ROLE_KEY` was missing — logging only a warning, not stopping anything. Every storage and admin operation in the app assumes `service_client` actually has elevated, service-role access (that's the entire basis of the user-isolation model discussed in SEC-3). A missing env var would silently change that assumption — the app would *start successfully* and *look like it was working* in a materially weaker security posture, with no signal beyond a log line nobody may be watching.
+
+### Fix
+[database.py](src/components/database.py) — added the missing-service-key check right alongside the existing missing-URL/anon-key check (same `CustomException`-on-`__init__` pattern already used one line above it), and removed the fallback branch entirely — `service_client` is now unconditionally built from the service-role key.
+
+### Why this approach
+A misconfiguration that changes your security model should be loud and immediate (the app refuses to start) rather than quiet and deferred (the app starts, looks fine, and only behaves differently in ways that are hard to notice — until something that depended on elevated access fails unpredictably, or worse, silently succeeds with the wrong permissions). This mirrors the exact pattern the class already used for the URL/anon-key check one line above — not a new convention, just extending an existing one to a third required secret.
+
+### Verification
+Added [tests/test_supabase_manager_init.py](tests/test_supabase_manager_init.py):
+- **Before the fix:** constructing `SupabaseManager` with an empty `SUPABASE_SERVICE_ROLE_KEY` succeeded silently (only a warning in the logs) — the test expecting a `CustomException` failed with "DID NOT RAISE."
+- **After the fix:** the same construction raises `CustomException` immediately; constructing with a real (fake-but-present) service key still works normally, and `client`/`service_client` are confirmed to be two genuinely distinct client objects.
+
+### Explain it simply (interview answer)
+My app needs two different "keys" to talk to its database: a regular one and an elevated "admin" one. If the elevated key was missing from the environment, my code's old behavior was: log a warning, then quietly hand out the *regular* key instead and carry on as if nothing was wrong. The app would start up fine and seem to work — but every operation that assumed it had elevated access actually didn't, and nothing made that obvious.
+
+**The fix:** if the elevated key is missing, refuse to start at all, with a clear error saying exactly what's missing and why. A loud failure at startup, when you're staring at the deploy logs anyway, is far easier to catch and fix than a silent downgrade that only shows up as a mysterious permission problem hours or days later.
+
+**How I proved it:** tried constructing the database manager with that key deliberately left empty — confirmed it used to succeed anyway (the bug). Added the check, tried again — now it raises immediately, with a message that says exactly what's wrong.

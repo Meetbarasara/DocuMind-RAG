@@ -34,6 +34,10 @@ try:
 except ImportError:
     from src.components.config import Config
 
+from src.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 # ── File-extension → partition function mapping ───────────────────────────
 # Each value is either a callable(filename) or a dict of kwargs for richer calls.
@@ -116,7 +120,7 @@ class DocumentProcessor:
                 raise ValueError(f"Unsupported file type: {extension}")
 
             elements = partition_fn(file_paths)
-            print(f"Processed {file_paths} successfully. Extracted {len(elements)} elements.\n")
+            logger.debug("Processed %s successfully. Extracted %d elements.", file_paths, len(elements))
 
             _log_elements_analysis(elements)
 
@@ -130,7 +134,7 @@ class DocumentProcessor:
             return elements
 
         except Exception as e:
-            print(f"Error processing {file_paths}: {e}")
+            logger.error("Error processing %s: %s", file_paths, e, exc_info=True)
             return []
 
     # ── Step 2: Convert elements → LangChain Documents ───────────────
@@ -156,7 +160,7 @@ class DocumentProcessor:
 
         # ── Text chunks ──────────────────────────────────────────────
         if text_elements:
-            print("Chunking TEXT elements by title...")
+            logger.debug("Chunking TEXT elements by title...")
             text_chunks = chunk_by_title(
                 elements=text_elements,
                 max_characters=self.config.CHUNK_SIZE,
@@ -183,11 +187,11 @@ class DocumentProcessor:
                 })
                 docs.append(Document(page_content=chunk_text, metadata=meta))
 
-            print(f"Created {len(text_chunks)} TEXT chunks.")
+            logger.debug("Created %d TEXT chunks.", len(text_chunks))
 
         # ── Table chunks ─────────────────────────────────────────────
         if table_elements:
-            print("Creating TABLE chunks...")
+            logger.debug("Creating TABLE chunks...")
 
             for i, el in enumerate(table_elements, start=1):
                 html = _table_html(el)
@@ -212,11 +216,11 @@ class DocumentProcessor:
                 })
                 docs.append(Document(page_content=table_text, metadata=meta))
 
-            print(f"Created {len(table_elements)} TABLE chunks.")
+            logger.debug("Created %d TABLE chunks.", len(table_elements))
 
         # ── Image chunks ─────────────────────────────────────────────
         if image_elements:
-            print("Creating IMAGE chunks...")
+            logger.debug("Creating IMAGE chunks...")
 
             for i, el in enumerate(image_elements, start=1):
                 page_number = _get_page_number(el)
@@ -240,9 +244,9 @@ class DocumentProcessor:
                 })
                 docs.append(Document(page_content=image_text, metadata=meta))
 
-            print(f"Created {len(image_elements)} IMAGE chunks.")
+            logger.debug("Created %d IMAGE chunks.", len(image_elements))
 
-        print(f"Total LangChain Documents created: {len(docs)}")
+        logger.debug("Total LangChain Documents created: %d", len(docs))
         return docs
 
 

@@ -34,6 +34,20 @@ class SupabaseManager:
         if not config.SUPABASE_URL or not config.SUPABASE_ANON_KEY:
             raise CustomException("SUPABASE_URL or SUPABASE_ANON_KEY is not set.")
 
+        # SEC-9 fix: this used to fall back to the anon client (with only a
+        # warning) when the service-role key was missing. Storage and admin
+        # operations (and the app's whole user-isolation model — see SEC-3)
+        # assume the service-role client is what's actually in use; silently
+        # substituting the anon client would silently change the app's
+        # security posture instead of failing loudly where a
+        # misconfiguration is easy to notice.
+        if not config.SUPABASE_SERVICE_ROLE_KEY:
+            raise CustomException(
+                "SUPABASE_SERVICE_ROLE_KEY is not set. It's required for "
+                "storage and admin operations — refusing to silently fall "
+                "back to the anon key."
+            )
+
         # Public (anon) client — used for auth operations
         self.client: Client = create_client(
             config.SUPABASE_URL,
@@ -41,18 +55,10 @@ class SupabaseManager:
         )
 
         # Service-role client — used for storage + admin metadata operations
-        # Falls back to anon client when service role key is absent
-        if config.SUPABASE_SERVICE_ROLE_KEY:
-            self.service_client: Client = create_client(
-                config.SUPABASE_URL,
-                config.SUPABASE_SERVICE_ROLE_KEY,
-            )
-        else:
-            logger.warning(
-                "SUPABASE_SERVICE_ROLE_KEY not set — using anon key for storage. "
-                "Some operations may fail due to RLS policies."
-            )
-            self.service_client = self.client
+        self.service_client: Client = create_client(
+            config.SUPABASE_URL,
+            config.SUPABASE_SERVICE_ROLE_KEY,
+        )
 
         self._bucket = config.SUPABASE_STORAGE_BUCKET
         logger.info("SupabaseManager initialised (bucket=%s)", self._bucket)

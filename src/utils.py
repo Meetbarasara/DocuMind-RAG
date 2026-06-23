@@ -90,9 +90,9 @@ def sanitize_filename(filename: str) -> str:
 
 
 def _log_elements_analysis(elements: List) -> None:
-    """Print a frequency breakdown of element types."""
+    """Log a frequency breakdown of element types (SEC-8: was print())."""
     counts = Counter(_get_element_type(el) for el in elements)
-    print(f"Element breakdown: {dict(counts)}")
+    logger.debug("Element breakdown: %s", dict(counts))
 
 
 # ── Content Description Builders ──────────────────────────────────────────
