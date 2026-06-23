@@ -20,9 +20,29 @@ def _get_element_type(el) -> str:
 
 
 def _get_page_number(el) -> Optional[int]:
-    """Extract page_number from an element's metadata, if present."""
+    """Extract page_number from an element's metadata, if present.
+
+    BUG-11 fix: chunk_by_title's composite chunks usually already carry
+    over the first original element's page_number when merging across
+    pages — but as a defensive fallback (this isn't something this app
+    controls, and library behavior can differ), if the element's own
+    page_number is missing, fall back to the first original element
+    (preserved via metadata.orig_elements) that has one.
+    """
     meta = getattr(el, "metadata", None)
-    return getattr(meta, "page_number", None) if meta else None
+    if not meta:
+        return None
+
+    page = getattr(meta, "page_number", None)
+    if page is not None:
+        return page
+
+    for orig in getattr(meta, "orig_elements", None) or []:
+        orig_page = getattr(getattr(orig, "metadata", None), "page_number", None)
+        if orig_page is not None:
+            return orig_page
+
+    return None
 
 
 def _element_has_image_payload(el) -> bool:
@@ -53,15 +73,6 @@ def _get_metadata_fields(el, fields: list) -> dict:
     if not meta:
         return {f: None for f in fields}
     return {f: getattr(meta, f, None) for f in fields}
-
-
-# ── ID Generation ─────────────────────────────────────────────────────────
-
-
-def _stable_id(file_path: str, chunk_type: str, index: int, text: str) -> str:
-    """Generate a deterministic SHA-1 chunk ID from its key attributes."""
-    raw = f"{file_path}::{chunk_type}::{index}::{text}".encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()
 
 
 # ── Filename Safety ───────────────────────────────────────────────────────
@@ -210,6 +221,27 @@ async def _summarize_older_messages_async(messages: list, llm: Any) -> str:
 # ── Chat History Formatting ───────────────────────────────────────────────
 
 
+def _role_label(role: str) -> str:
+    return "User" if role in ("user", "human") else "Assistant"
+
+
+def _trim_lines_to_budget(lines: List[str], enc, max_tokens: int) -> List[str]:
+    """Return the longest *suffix* of lines whose combined token count fits.
+
+    BUG-14 fix: encodes each line exactly once instead of re-encoding the
+    whole (shrinking) joined text on every iteration as lines were dropped
+    from the front — the old loop redundantly re-encoded every surviving
+    line again on every single iteration.
+    """
+    token_counts = [len(enc.encode(line)) for line in lines]
+    total = sum(token_counts)
+    start = 0
+    while total > max_tokens and start < len(lines):
+        total -= token_counts[start]
+        start += 1
+    return lines[start:]
+
+
 def format_chat_history(
     chat_history: list,
     window: int = 6,
@@ -239,21 +271,18 @@ def format_chat_history(
     recent = chat_history[-window:]
 
     def _fmt(msgs: list) -> str:
-        lines = []
-        for msg in msgs:
-            role = "User" if msg["role"] in ("user", "human") else "Assistant"
-            lines.append(f"{role}: {msg['content'][:500]}")
-        return "\n".join(lines)
+        return "\n".join(f"{_role_label(m['role'])}: {m['content'][:500]}" for m in msgs)
 
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
-        while recent:
-            text = _fmt(recent)
-            if len(enc.encode(text)) <= max_tokens:
-                return text
-            recent = recent[1:]
-        return ""
+
+        full_text = _fmt(recent)
+        if len(enc.encode(full_text)) <= max_tokens:
+            return full_text
+
+        lines = [f"{_role_label(m['role'])}: {m['content'][:500]}" for m in recent]
+        return "\n".join(_trim_lines_to_budget(lines, enc, max_tokens))
     except ImportError:
         return _fmt(recent)
 
@@ -294,20 +323,27 @@ async def format_chat_history_async(
     recent = chat_history[-window:]
 
     def _fmt(msgs: list) -> str:
-        lines = []
-        for msg in msgs:
-            role = "User" if msg["role"] in ("user", "human") else "Assistant"
-            lines.append(f"{role}: {msg['content'][:500]}")
-        return "\n".join(lines)
+        return "\n".join(f"{_role_label(m['role'])}: {m['content'][:500]}" for m in msgs)
 
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
-        while recent:
-            text = summary_prefix + _fmt(recent)
-            if len(enc.encode(text)) <= max_tokens:
-                return text
-            recent = recent[1:]
+
+        full_text = summary_prefix + _fmt(recent)
+        if len(enc.encode(full_text)) <= max_tokens:
+            return full_text
+
+        # Reserve room for the summary's own tokens, then fit as many
+        # recent lines as possible in what's left — same priority as
+        # before (protect the summary, drop messages first), just without
+        # re-encoding the whole shrinking text on every iteration.
+        summary_tokens = len(enc.encode(summary_prefix)) if summary_prefix else 0
+        budget = max_tokens - summary_tokens
+        lines = [f"{_role_label(m['role'])}: {m['content'][:500]}" for m in recent]
+        kept = _trim_lines_to_budget(lines, enc, budget) if budget > 0 else []
+
+        if kept:
+            return summary_prefix + "\n".join(kept)
         return summary_prefix.strip() if summary_prefix else ""
     except ImportError:
         return summary_prefix + _fmt(recent)

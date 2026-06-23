@@ -25,7 +25,6 @@ from src.utils import (
     _get_metadata_fields,
     _get_page_number,
     _log_elements_analysis,
-    _stable_id,
     _table_html,
 )
 
@@ -173,17 +172,23 @@ class DocumentProcessor:
                 if len(chunk_text) < 10:
                     continue
 
-                meta = _get_metadata_fields(chunk, _BASE_META_FIELDS + ["page_number"])
+                meta = _get_metadata_fields(chunk, _BASE_META_FIELDS)
                 meta.update({
                     "chunk_type": "text",
                     "source": meta["filepath"] or meta["filename"],
+                    # BUG-11 fix: text chunks pulled page_number straight
+                    # off the chunk's own metadata, with no fallback —
+                    # table/image chunks already use _get_page_number,
+                    # which now also falls back to orig_elements (the
+                    # pre-chunking elements) if the composite's own
+                    # page_number is missing.
+                    "page_number": _get_page_number(chunk),
                     "chunk_index": i,
-                    "chunk_id": _stable_id(
-                        file_path=str(meta["filepath"] or "unknown"),
-                        chunk_type="text",
-                        index=i,
-                        text=chunk_text,
-                    ),
+                    # BUG-12 fix: chunk_id was set here via _stable_id(...),
+                    # then unconditionally overwritten by embeddings.py's
+                    # own scheme right before upsert — this assignment was
+                    # dead. Removed (here and in the table/image branches
+                    # below) rather than computing an id that's never used.
                 })
                 docs.append(Document(page_content=chunk_text, metadata=meta))
 
@@ -207,12 +212,6 @@ class DocumentProcessor:
                     "chunk_index": i,
                     "table_format": "html" if html else "text",
                     "description": _create_table_description(el),
-                    "chunk_id": _stable_id(
-                        file_path=str(meta["filepath"] or "unknown"),
-                        chunk_type="table",
-                        index=i,
-                        text=table_text,
-                    ),
                 })
                 docs.append(Document(page_content=table_text, metadata=meta))
 
@@ -235,12 +234,6 @@ class DocumentProcessor:
                     "has_image_payload": bool(meta.pop("image_base64", None)),
                     "image_path": meta.pop("image_path", None),
                     "description": image_text,
-                    "chunk_id": _stable_id(
-                        file_path=str(meta["filepath"] or "unknown"),
-                        chunk_type="image",
-                        index=i,
-                        text=image_text,
-                    ),
                 })
                 docs.append(Document(page_content=image_text, metadata=meta))
 

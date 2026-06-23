@@ -631,3 +631,122 @@ My app needs two different "keys" to talk to its database: a regular one and an 
 **The fix:** if the elevated key is missing, refuse to start at all, with a clear error saying exactly what's missing and why. A loud failure at startup, when you're staring at the deploy logs anyway, is far easier to catch and fix than a silent downgrade that only shows up as a mysterious permission problem hours or days later.
 
 **How I proved it:** tried constructing the database manager with that key deliberately left empty — confirmed it used to succeed anyway (the bug). Added the check, tried again — now it raises immediately, with a message that says exactly what's wrong.
+
+---
+
+## BUG-11: Text chunks had no fallback when a composite chunk's own page number was missing
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+The original review claimed `chunk_by_title` "merges elements across pages, so `page_number` is frequently `None`," weakening citations (BUG-8). Before changing anything, I verified this empirically against the actually-installed `unstructured==0.22.10` by running real elements with different page numbers through `chunk_by_title` directly — and the composite chunk's own `page_number` was correctly set to the *first* original element's page, not `None`. `page_number` only came back `None` when *every* original element genuinely had no page number at all (e.g. non-paginated formats like `.txt`/`.csv`) — which is correct behavior, not a bug, since there's no real page to report. So the review's specific claim didn't hold for this codebase's actual dependency version.
+
+That said, there's a real, narrower gap worth closing: [ingestion.py](src/components/ingestion.py)'s text-chunk branch read `page_number` straight off the chunk's own metadata with **no fallback at all** if it ended up `None` for any reason — table/image chunks already used the more defensive `_get_page_number()` helper; text chunks didn't.
+
+### Fix
+[utils.py](src/utils.py) `_get_page_number()` now falls back to the first original element (preserved via `metadata.orig_elements`, which `unstructured` populates specifically so chunked metadata can be reconstructed) that has a `page_number`, if the composite's own is missing. [ingestion.py](src/components/ingestion.py)'s text-chunk branch now uses this same helper (it previously extracted `page_number` directly via `_get_metadata_fields`, with no fallback) — bringing it in line with the table/image branches.
+
+### Why this approach
+I didn't "fix" `chunk_by_title` — I verified it wasn't actually broken in the way described, for this version. The fallback is genuine defense-in-depth: it doesn't depend on understanding every internal quirk of a third-party library's chunking algorithm or guarantee across every future version: if the composite's own page metadata is ever missing despite some original element having one, the fallback recovers it; if truly nothing has it, it still correctly returns `None`/`N/A`.
+
+### Verification
+Added [tests/test_page_number_fallback.py](tests/test_page_number_fallback.py) — duck-typed fake elements (no real `unstructured` objects needed, since `_get_page_number` only does `getattr` calls): own `page_number` present → used directly; own missing but an `orig_elements` entry has one → recovered; nothing anywhere has one → `None`. **Before the fix:** the fallback case returned `None` instead of the recoverable page number. **After:** all three cases pass.
+
+### Explain it simply (interview answer)
+Before touching any code, I tested the actual third-party library's behavior directly — fed it elements from two different pages and checked what page number it gave the merged result. Turned out it already does the sensible thing (uses the first page) — the bug report's claim about *this* library version was simply wrong. That's worth saying out loud in an interview: not every reported bug is real once you check it against the actual running code, and confirming that *before* writing a fix saves you from "fixing" something that already works.
+
+What I found instead, while looking: one of three places that reads a page number had no safety net at all if it ever came back empty, while the other two did. So I added the same safety net there too — if the obvious place to find a page number comes up empty, check the original pre-merge pieces for one before giving up.
+
+---
+
+## BUG-12: A dead `chunk_id` was computed and then immediately thrown away
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[ingestion.py](src/components/ingestion.py) computed a `chunk_id` for every chunk via `_stable_id(...)` (a SHA-1 hash). [embeddings.py](src/components/embeddings.py) then unconditionally **overwrote** that value with its own scheme (`f"{filename}::{content_hash}"`, since the BUG-7 fix) right before upserting to Pinecone. The first `chunk_id` was computed, stored in a dict, and then discarded without ever being used for anything — confirmed via search that `_stable_id` had no other callers anywhere in the codebase.
+
+### Fix
+Removed all three `chunk_id: _stable_id(...)` assignments from `ingestion.py` (text/table/image branches), removed the now-unused `_stable_id` import, and deleted `_stable_id` itself from [utils.py](src/utils.py) (confirmed unused everywhere afterward via `pyflakes`).
+
+### Why this approach
+The review's own framing was "pick one" — embeddings.py's version is the one that's actually used (it's the upsert ID, and what `delete_document_by_filename` reads back), so there was nothing to migrate, only dead code to delete. Per the project's own convention: if something's confirmed unused, delete it rather than leaving it as confusing, never-executed scaffolding.
+
+### Verification
+Full test suite (57 tests) still passes after removal, and `pyflakes` is clean — confirming nothing else referenced the removed function or the removed dict keys.
+
+### Explain it simply (interview answer)
+Two different parts of the code each generated their own "unique ID" for the same piece of data — but only one of them was ever actually used; the other was computed and then immediately overwritten before it could do anything. It's like filling out a form in pen and then someone else stamping over it before it's ever filed. I deleted the part that gets overwritten, since keeping code that runs but never affects anything is just confusing for the next person reading it.
+
+---
+
+## BUG-13: `datetime.utcnow()` — deprecated and timezone-naive
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[database.py](src/components/database.py) `record_upload` stored `uploaded_at` via `datetime.utcnow().isoformat()`. `datetime.utcnow()` is deprecated since Python 3.12 (Python itself emits a `DeprecationWarning`) and — more practically — produces a **naive** datetime with no timezone marker, so a value like `"2026-06-24T10:30:00"` doesn't actually say it's UTC; a consumer has to know that out-of-band.
+
+### Fix
+`datetime.now(UTC).isoformat()` instead — produces a timezone-aware ISO string with an explicit `+00:00` suffix. Safe to use `datetime.UTC` (added in Python 3.11) since the project's own README states Python 3.11+ as a prerequisite.
+
+### Verification
+Added [tests/test_record_upload_timestamp.py](tests/test_record_upload_timestamp.py), capturing the row passed to the (faked) Supabase upsert call. **Before the fix:** the timestamp had no timezone suffix, and Python's own `DeprecationWarning` showed up in the test output. **After:** the timestamp correctly ends in `+00:00`, no warning.
+
+### Explain it simply (interview answer)
+A timestamp without a timezone is technically ambiguous — `"10:30:00"` could be UTC, could be the server's local time, could be anything, and whoever reads it later has to just *assume* which one. Python's older "give me the current UTC time" function actually returns a value with that ambiguity baked in (no timezone attached), which is exactly why Python deprecated it in favor of one that returns an explicit, labeled UTC time. One-line fix, but a real correctness improvement for anything that later reads or compares these timestamps.
+
+---
+
+## BUG-14: Chat-history trimming re-encoded the same overlapping text on every loop iteration
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[utils.py](src/utils.py) `format_chat_history` / `format_chat_history_async` fit recent messages into a token budget with a loop: format *all* currently-surviving messages into one string, tokenize the whole thing, and if it's still too big, drop the oldest message and repeat. The most recent message survives in that joined string until the very last iteration — so it (and every other message that hasn't been dropped yet) gets **re-tokenized from scratch on every iteration**, even though its own token count never changes between iterations.
+
+### Fix
+Added `_trim_lines_to_budget()`: tokenizes each message line exactly **once**, then trims from the front using simple integer subtraction on the precomputed counts — no re-tokenizing. Both functions now: try the full text once (unchanged behavior for the common "everything fits" case — still just one encode call), and only fall back to the per-line budget trim if that didn't fit. The async version additionally accounts for the summarized-older-messages prefix's own token cost before deciding how many recent lines fit alongside it, preserving the original priority (protect the summary, drop individual messages first).
+
+### Why this approach
+This keeps the cheap, common case (conversation fits, no trimming needed) exactly as cheap as before — one encode call — while fixing the actual waste, which only shows up once trimming is needed: previously, *every* surviving message got re-tokenized on *every* iteration of the loop; now each one is tokenized exactly once, period, regardless of how many iterations the old loop would have needed.
+
+### Verification
+Added [tests/test_chat_history_trim_efficiency.py](tests/test_chat_history_trim_efficiency.py) with a fake tokenizer that records every string it's asked to encode. Metric: how many times does the *most recent* message's content show up across all encode calls — a way to detect redundant re-encoding that doesn't depend on fragile exact-character-count math.
+- **Before the fix:** the most recent message's content was encoded 6 times (once per loop iteration) for both the sync and async versions.
+- **First version of this test had a bug, not the code:** the test's fake messages all used identical filler text ("x" repeated), so the "most recent message" marker matched *every* message's line, not just the real last one — produced a misleadingly-still-failing result (7 hits) right after the fix landed. Gave each fake message distinct content, reran, and got the real signal: 2 hits (the one-time full-text attempt, plus that message's own single-line encode) for both functions.
+
+### Explain it simply (interview answer)
+Imagine repeatedly asking "does this fit in the box?" by taking everything out, measuring it all again from scratch, putting back everything except the oldest item, and repeating — instead of just weighing each item once and doing subtraction. My code was doing the expensive version: every time it needed to drop the oldest message to make room, it re-measured (re-tokenized) *everything still in the box*, including items it had already measured in the previous step.
+
+**The fix:** measure each message exactly once, then use simple arithmetic to figure out how many of the most recent ones fit, instead of re-measuring the whole shrinking pile over and over.
+
+**How I proved it:** built a fake tokenizer that just remembers everything it's ever asked to measure, then checked how many times the newest message got remeasured. Before: 6 times. After: 2. And — small but real lesson — my first attempt at this test was itself broken (all my fake messages looked identical, so I couldn't actually tell which message was being remeasured), which I only caught because the post-fix result still looked wrong. Fixed the test's setup, then got a result that actually meant something.
+
+---
+
+## BUG-15: RAGAS evaluation routes blocked the event loop and had no rate limit
+
+**Status:** Fixed 2026-06-24
+
+### Symptom
+[evaluate.py](src/api/router/evaluate.py)'s `/api/evaluate/single` and `/api/evaluate/batch` routes are `async def`, but called `EvaluationManager`'s plain, synchronous `evaluate_single`/`evaluate_batch` directly — and those make several real LLM calls each via RAGAS. Same class of problem as BUG-3: a blocking call inside an async route freezes the entire server for every other concurrent request for the whole duration of the evaluation. On top of that, neither route had any rate limit, despite being arguably the single most expensive operation exposed by the app — any authenticated user could trigger unbounded batch evaluations.
+
+### Fix
+1. Wrapped both calls in `await asyncio.to_thread(...)` so they run in a worker thread instead of on the event loop — same fix pattern as BUG-3, applied to a different blocking dependency (RAGAS instead of LangChain).
+2. Added `request: Request` + `@limiter.limit(...)`: `5/minute` for `single`, a tighter `2/minute` for `batch` (its cost scales with how many rows are in the request).
+
+### Why this approach
+Didn't introduce a new "admin-only" authorization tier, which the review's "no auth-scoping" phrase could be read as suggesting — there's no existing role/permission concept anywhere else in this codebase (every route is just "authenticated or not"), and bolting one on for this single feature would be a bigger, unrequested architecture addition rather than a contained fix. Rate limiting plus moving the blocking work off the event loop directly addresses the concrete, demonstrated problems (server-wide blocking, unbounded cost) using patterns already established elsewhere in this same codebase (BUG-3, SEC-7).
+
+### Verification
+Added [tests/test_evaluate_routes.py](tests/test_evaluate_routes.py) — same concurrency-timing technique as BUG-3 (a fake `EvaluationManager` whose methods do a real blocking `time.sleep`, two requests fired concurrently via `asyncio.gather`, wall time measured), plus a rate-limit test matching SEC-7's pattern.
+- **Before the fix:** both `single` and `batch` took ~0.41s for 2 concurrent calls against a 0.30s threshold (serialized, not concurrent); 10 rapid calls to `single` never returned a 429.
+- **After the fix:** both finish in ~0.2s (genuinely concurrent), and a 429 shows up within the first 10 rapid calls while the very first request still succeeds normally.
+
+### Explain it simply (interview answer)
+This evaluation feature runs an AI-judging-AI process that makes several real calls to a language model per item — expensive in both time and money. My code called it the same way you'd call a quick, free function: directly, with no consideration that something else might need the server's attention at the same time. So while one evaluation ran, the *entire server* was frozen for every other user, however briefly. And worse, anyone with a valid login could trigger this expensive operation as many times as they wanted, with literally nothing stopping them.
+
+**The fix:** run the expensive evaluation work on a separate thread instead of directly on the main "traffic cop" thread that's supposed to be juggling every request — and put a speed limit on how often any one person can trigger it, tighter for the batch version since it can process many items at once.
+
+**How I proved it:** same trick as a similar bug I'd already found and fixed elsewhere (BUG-3) — built a fake version of the slow part that does a real, measurable pause, fired two requests at the same time, and timed it. Blocked: requests took twice as long together as one alone. Fixed: they took about the same time as just one — proving they actually ran side by side.

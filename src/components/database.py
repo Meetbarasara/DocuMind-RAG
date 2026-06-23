@@ -6,7 +6,7 @@ Provides:
   - File metadata persistence in the ``user_documents`` Supabase table
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -270,7 +270,9 @@ class SupabaseManager:
                 "filename": filename,
                 "file_type": file_type,
                 "size_bytes": size_bytes,
-                "uploaded_at": datetime.utcnow().isoformat(),
+                # BUG-13 fix: utcnow() is deprecated since 3.12 and naive
+                # (no tz info) — now() with UTC is tz-aware.
+                "uploaded_at": datetime.now(UTC).isoformat(),
             }
             result = (
                 self.service_client.table("user_documents")
