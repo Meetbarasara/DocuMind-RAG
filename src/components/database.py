@@ -15,6 +15,7 @@ from supabase import Client, create_client
 from src.components.config import Config
 from src.exception import CustomException
 from src.logger import get_logger
+from src.utils import sanitize_filename
 
 logger = get_logger(__name__)
 
@@ -130,8 +131,16 @@ class SupabaseManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _storage_path(self, user_id: str, filename: str) -> str:
-        """Build the storage key: ``{user_id}/{filename}``."""
-        return f"{user_id}/{filename}"
+        """Build the storage key: ``{user_id}/{filename}``.
+
+        SEC-2: sanitizes *filename* to a basename so a value containing
+        ``..`` segments can't move the storage key outside the user's prefix.
+        """
+        try:
+            safe_filename = sanitize_filename(filename)
+        except ValueError as e:
+            raise CustomException(f"Invalid filename: {filename!r}") from e
+        return f"{user_id}/{safe_filename}"
 
     def upload_file(
         self, user_id: str, file_bytes: bytes, filename: str, content_type: str = "application/octet-stream"
@@ -186,6 +195,13 @@ class SupabaseManager:
         Raises:
             CustomException: if the download fails.
         """
+        # SEC-2: sanitize before building the *local* tmp_path below — this is
+        # a direct filesystem join, separate from _storage_path's own check.
+        try:
+            filename = sanitize_filename(filename)
+        except ValueError as e:
+            raise CustomException(f"Invalid filename: {filename!r}") from e
+
         storage_path = self._storage_path(user_id, filename)
         try:
             file_bytes = self.service_client.storage.from_(self._bucket).download(storage_path)

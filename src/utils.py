@@ -1,5 +1,6 @@
 import hashlib
 from collections import Counter
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from src.logger import get_logger
@@ -61,6 +62,28 @@ def _stable_id(file_path: str, chunk_type: str, index: int, text: str) -> str:
     """Generate a deterministic SHA-1 chunk ID from its key attributes."""
     raw = f"{file_path}::{chunk_type}::{index}::{text}".encode("utf-8")
     return hashlib.sha1(raw).hexdigest()
+
+
+# ── Filename Safety ───────────────────────────────────────────────────────
+
+
+def sanitize_filename(filename: str) -> str:
+    """Reduce a client-supplied filename to a safe basename (SEC-2).
+
+    Client filenames (multipart upload names, path params) are used to build
+    local temp paths and Supabase storage keys. Without this, a value like
+    "../../etc/passwd" or "..\\..\\evil.txt" escapes the intended directory.
+    Normalizing backslashes before stripping handles Windows-style traversal
+    too, since PurePosixPath only treats "/" as a separator.
+
+    Raises:
+        ValueError: if nothing safe remains (empty, ".", or "..").
+    """
+    normalized = (filename or "").replace("\\", "/")
+    name = PurePosixPath(normalized).name
+    if not name or name in (".", ".."):
+        raise ValueError(f"Invalid filename: {filename!r}")
+    return name
 
 
 # ── Logging / Analysis ────────────────────────────────────────────────────

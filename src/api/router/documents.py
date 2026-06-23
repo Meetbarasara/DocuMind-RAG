@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from src.api.dependencies import get_current_user, get_db, get_pipeline
 from src.components.database import SupabaseManager
 from src.pipeline.pipeline import RAGPipeline
+from src.utils import sanitize_filename
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -45,19 +46,33 @@ async def upload_document(
 ):
     """Upload a document, store in Supabase Storage, then ingest into Pinecone."""
     config = pipeline.config
-    _validate_extension(file.filename, config.SUPPORTED_FILE_TYPES)
+
+    # SEC-2: file.filename is the raw client-supplied multipart filename — it
+    # can contain "../" segments with no validation from FastAPI/Starlette
+    # (unlike a URL path param, there's no routing-layer protection here).
+    # Reduce it to a basename before it's used to build any local path or
+    # storage key.
+    try:
+        safe_filename = sanitize_filename(file.filename)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid filename: {file.filename!r}",
+        )
+
+    _validate_extension(safe_filename, config.SUPPORTED_FILE_TYPES)
 
     user_id = str(current_user["user"].id)
     file_bytes = await file.read()
     file_size = len(file_bytes)
-    ext = Path(file.filename).suffix.lstrip(".").lower()
+    ext = Path(safe_filename).suffix.lstrip(".").lower()
 
     # ── 1. Save to Supabase Storage ──────────────────────────────────────
     try:
         db.upload_file(
             user_id=user_id,
             file_bytes=file_bytes,
-            filename=file.filename,
+            filename=safe_filename,
             content_type=file.content_type or "application/octet-stream",
         )
     except Exception as e:
@@ -69,7 +84,7 @@ async def upload_document(
     # ── 2. Write to temp file for ingestion ──────────────────────────────
     tmp_dir = Path(config.UPLOAD_DIR)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / file.filename
+    tmp_path = tmp_dir / safe_filename
     tmp_path.write_bytes(file_bytes)
 
     # ── 3. Ingest → embed → upsert ───────────────────────────────────────
@@ -92,14 +107,14 @@ async def upload_document(
     # ── 4. Record metadata ───────────────────────────────────────────────
     db.record_upload(
         user_id=user_id,
-        filename=file.filename,
+        filename=safe_filename,
         file_type=ext,
         size_bytes=file_size,
     )
 
     return {
         "message": "Document uploaded and ingested successfully",
-        "filename": file.filename,
+        "filename": safe_filename,
         "chunks_ingested": chunk_count,
         "size_bytes": file_size,
     }
@@ -125,6 +140,19 @@ async def delete_document(
 ):
     """Delete a document from Supabase Storage and remove its Pinecone vectors."""
     user_id = str(current_user["user"].id)
+
+    # SEC-2: defense-in-depth — FastAPI's default (non-":path") string
+    # converter already rejects "/" in this segment, and dot-segments
+    # ("..") get normalized away before routing ever matches. Still
+    # sanitize explicitly rather than relying on that routing behavior as
+    # the only safety net.
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid filename: {filename!r}",
+        )
 
     # ── Delete from Storage ───────────────────────────────────────────────
     storage_deleted = db.delete_file(user_id=user_id, filename=filename)
