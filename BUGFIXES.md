@@ -850,3 +850,37 @@ Picture a search engine that finds two nearly-identical paragraphs answering you
 The fix: by the time this duplicate-removal step runs, the search system has *already* ranked all the results from best to worst (that ranking happens earlier, before dedup ever sees them). So instead of measuring length, I just keep whichever of the two duplicates the search system already ranked higher — a real signal of relevance that was sitting right there the whole time, completely unused.
 
 **How I proved it:** I built two near-duplicate paragraphs sharing the same core content, made the *higher-ranked* one short and the *lower-ranked* one artificially long (same words, repeated filler tacked on). Before the fix, the code kept the long, lower-ranked one. After the fix, it correctly keeps the short, higher-ranked one. I also checked that two genuinely different paragraphs are never merged by either version — the fix only changes which survivor gets picked when there really is a duplicate, not how aggressively duplicates get detected.
+
+---
+
+## Logical Mistake #7: Memory-summarization cache key could collide across different conversations
+
+**Status:** Fixed 2026-06-25
+
+### Symptom
+`_hash_messages` ([utils.py](src/utils.py)) built its cache key from only `f"count:{len(messages)}::last:{messages[-1].get('content','')[:50]}"` — the message *count* plus the first 50 characters of the *last* message's content. Every other message's content (everything actually being summarized) was completely ignored. Two different conversations with the same number of older messages and the same (or same-prefix) last message produce an identical hash and share a cache slot — the second conversation gets served the *first* conversation's cached summary instead of its own.
+
+### Root Cause
+The function's docstring/comment describes itself as a "stable hash of a list of message dicts," but the implementation only ever looked at two cheap-to-compute proxies (length, last message prefix) instead of the actual content being hashed. Truncating the last message to 50 characters makes the collision easier still — two messages only need to *share a 50-character prefix*, not be identical, to collide.
+
+### Fix
+[utils.py](src/utils.py) `_hash_messages` — hash every message's role and full content, joined with `"\x1f"` (ASCII unit separator, chosen specifically because it's very unlikely to appear in real chat text — unlike `":"` or `"\n"`, which user messages could plausibly contain, a plain `+`/`join` without a separator could otherwise let `("ab", "c")` and `("a", "bc")` hash identically at a role/content boundary).
+
+### Why this approach
+This is exactly what the review itself suggested ("hash the full older-message content instead") and what the function's own docstring already claimed to do — the fix brings the implementation in line with its stated contract rather than introducing a new caching strategy. Hashing role+content (not just content) also means a message that's flipped from `user` to `assistant` with identical text — an edge case, but a real one — doesn't accidentally collide either.
+
+### Verification
+Added [tests/test_memory_cache_key_collision.py](tests/test_memory_cache_key_collision.py) with three tests, the last of which exercises the actual observable bug (wrong summary served), not just the hash function in isolation:
+- **Before the fix:**
+  - Two conversations with the same length and the same last message produced identical hashes — failed immediately.
+  - End-to-end: summarizing conversation A (about quantum computing) then conversation B (about French geography) — both ending in the same last message — returned conversation **A's** cached summary text for conversation B's call, without ever invoking the (fake) LLM a second time.
+- **After the fix:** the two conversations hash differently, and each correctly triggers its own summarization call, returning its own distinct summary.
+- A third test (passed both before and after, included as a sanity check, not a reproduction) confirms the *same* conversation still hashes identically across calls — the fix doesn't break legitimate cache hits.
+- Full suite: 69 passed. `ruff` clean on both changed files.
+
+### Explain it simply (interview answer)
+To avoid re-summarizing the same conversation history with an expensive LLM call every single time, my code cached summaries — keyed by a "fingerprint" of the conversation being summarized. The bug: that fingerprint was way too sloppy. It was built from just two things — how *many* messages there were, and the first 50 characters of the *last* one — completely ignoring everything else that was actually said. Two completely different conversations that happened to be the same length and end the same way (a very plausible coincidence — lots of chats end with something like "thanks, can you also check X") would get treated as "the same conversation" and the second one would silently receive the *first* conversation's cached summary. Wrong information, served confidently, with no error at all.
+
+**The fix:** build the fingerprint from everything that was actually said — every message's role and full content — not just a couple of cheap shortcuts.
+
+**How I proved it:** I built two obviously-different conversations (one about quantum computing, one about French geography) that were deliberately the same length and shared an identical last message. Before the fix, summarizing the second one returned the *first* one's cached summary verbatim — a wrong answer served with total confidence. After the fix, each conversation gets its own correctly-computed summary.

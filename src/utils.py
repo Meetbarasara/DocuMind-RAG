@@ -147,10 +147,21 @@ _summary_cache: Dict[str, str] = {}
 
 
 def _hash_messages(messages: list) -> str:
-    """Stable hash of a list of message dicts (used as cache key)."""
+    """Stable hash of a list of message dicts (used as cache key).
+
+    Logical Mistake #7 fix: this used to hash only "count + last 50 chars
+    of the last message" -- two different conversations with the same
+    number of messages and the same (or same-prefix) last message collided
+    on the same cache key and got served each other's cached summary.
+    Hash every message's role and full content instead, with a separator
+    byte unlikely to appear in real text so e.g. role/content boundaries
+    can't be shifted to produce a matching hash for different inputs.
+    """
     if not messages:
         return ""
-    raw = f"count:{len(messages)}::last:{messages[-1].get('content', '')[:50]}"
+    raw = "\x1f".join(
+        f"{m.get('role', '')}\x1f{m.get('content', '')}" for m in messages
+    )
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
