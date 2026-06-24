@@ -817,3 +817,36 @@ The keyword engine's actual library always hands back exactly the number of resu
 **The fix:** before blending the keyword engine's results in, I now ask it for the actual relevance score behind each one (a feature the library already has, it just wasn't being used) and throw out anything scoring exactly zero — no shared words, no business being in the results. I deliberately didn't reuse the *meaning* engine's 0-to-1 threshold number for this, because the two engines measure relevance in totally different, non-comparable units — that would've been swapping one bug for another.
 
 **How I proved it:** I picked a query ("fox dog") and a tiny 3-document collection where I knew, by construction, that two of the documents shared no words with it at all. I confirmed with the real scoring library that those two genuinely scored `0.0` — then showed they still came back from my code's hybrid search anyway. After the fix, they're filtered out, while a real keyword match and a real semantic match both still come through correctly.
+
+---
+
+## Logical Mistake #4: Chunk dedup kept the longer chunk instead of the more relevant one
+
+**Status:** Fixed 2026-06-25
+
+### Symptom
+`_deduplicate_chunks` ([retrieval.py](src/components/retrieval.py)) removes near-duplicate chunks (Jaccard similarity ≥ `CHUNK_DEDUP_THRESHOLD`), and always kept whichever of the pair had **more characters** — with no connection to which one was actually more relevant to the query.
+
+### Root Cause
+Dedup runs inside `retrieve_candidates()`, immediately after `_hybrid_retrieve`/`_dense_retrieve` and *before* any re-ranking (`rerank()` is a separate, later step — see the BUG-6 fix). At the point dedup runs, there's no cross-encoder relevance score attached to any `Document` yet — but there is a real, available, relevance-correlated signal being thrown away: **position in the list**. `_hybrid_retrieve` returns its merged result sorted by RRF score descending; `_dense_retrieve` returns Pinecone's own similarity-ranked results in order. Either way, `docs[0]` is retrieval's own best guess at "most relevant," `docs[1]` the next-best, and so on. Chunk *length* has no relationship to any of that — a verbose, padded duplicate could out-rank a concise, on-topic one purely by character count.
+
+### Fix
+[retrieval.py](src/components/retrieval.py) `_deduplicate_chunks` — when two chunks at indices `i < j` exceed the similarity threshold, always keep `i` and remove `j`. The inner loop only ever compares an index against *later* indices, so `i` is always the higher-ranked (or equal) one of any pair being compared — there's no longer a need for the length comparison, the `else` branch that removed `i` instead, or the `break` that existed only to stop comparing a doc that branch could mark for removal (now that `i` is never removed within its own iteration, none of that is reachable).
+
+### Why this approach
+This uses a signal that's already correct and already available — retrieval's own ranking — instead of inventing a new one or restructuring the pipeline to attach scores earlier. It doesn't change *when* dedup runs (still before re-ranking, which is intentional — re-ranking via cross-encoder is the expensive step, and deduping first avoids wasting it on near-identical text) or move length out as a signal entirely in some more complex tie-break scheme; it just stops using a signal (length) that was actively wrong in favor of one (rank) that was sitting right there, unused, the whole time.
+
+### Verification
+Added [tests/test_dedup_keeps_relevant_chunk.py](tests/test_dedup_keeps_relevant_chunk.py):
+- Constructed two near-duplicate chunks (10 shared words, Jaccard ≈0.91, over the 0.85 default threshold) where the first (higher-ranked, i.e. earlier in the list) is short, and the second (lower-ranked) is the same text padded with 50 repeats of one filler word — same word *set* overlap, but more than 5x the character length.
+- **Before the fix:** dedup kept the padded, lower-ranked chunk and discarded the shorter, higher-ranked one.
+- **After the fix:** dedup keeps the higher-ranked chunk regardless of length.
+- A second test confirms genuinely distinct chunks (no real overlap) are still left alone by both versions — the fix doesn't make dedup more or less aggressive, only changes *which* survivor it picks.
+- Full suite: 66 passed. `ruff`/`pyflakes` clean on the changed file (the same pre-existing, unrelated `Optional` unused-import warning from the Logical Mistake #3 fix — confirmed via `git diff` to predate both changes).
+
+### Explain it simply (interview answer)
+Picture a search engine that finds two nearly-identical paragraphs answering your question — one is a tight, three-sentence answer; the other says the same thing but padded with filler. My code's rule for picking which one to keep, whenever it found two like this, was simply "keep whichever is longer" — treating word count as if it were a proxy for quality. It isn't. A padded, rambling version of the same answer isn't more relevant just because it's bigger.
+
+The fix: by the time this duplicate-removal step runs, the search system has *already* ranked all the results from best to worst (that ranking happens earlier, before dedup ever sees them). So instead of measuring length, I just keep whichever of the two duplicates the search system already ranked higher — a real signal of relevance that was sitting right there the whole time, completely unused.
+
+**How I proved it:** I built two near-duplicate paragraphs sharing the same core content, made the *higher-ranked* one short and the *lower-ranked* one artificially long (same words, repeated filler tacked on). Before the fix, the code kept the long, lower-ranked one. After the fix, it correctly keeps the short, higher-ranked one. I also checked that two genuinely different paragraphs are never merged by either version — the fix only changes which survivor gets picked when there really is a duplicate, not how aggressively duplicates get detected.

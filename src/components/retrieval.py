@@ -189,7 +189,17 @@ class RetrievalManager:
         """Remove near-duplicate chunks using Jaccard similarity.
 
         When two chunks exceed ``config.CHUNK_DEDUP_THRESHOLD`` similarity,
-        the longer chunk is kept (it likely contains more context).
+        the higher-ranked chunk is kept.
+
+        Logical Mistake #4 fix: this used to keep whichever chunk had more
+        characters, which has no relationship to relevance. ``docs`` arrives
+        here already ordered best-first by the caller (RRF score for hybrid
+        search, similarity score for dense-only) and *before* re-ranking, so
+        position in the list is the only relevance signal available at this
+        point -- a real one, unlike length. Since the inner loop only ever
+        compares index ``i`` against later indices ``j > i``, ``i`` is
+        always the higher-ranked (or equally-ranked) one of any duplicate
+        pair, so the fix is simply: always remove ``j``, never ``i``.
         """
         if not self.config.USE_CHUNK_DEDUP or len(docs) <= 1:
             return docs
@@ -210,15 +220,9 @@ class RetrievalManager:
                     doc_i.page_content, docs[j].page_content
                 )
                 if sim >= threshold:
-                    # Keep the longer chunk, mark the shorter for removal
-                    if len(doc_i.page_content) >= len(docs[j].page_content):
-                        removed_indices.add(j)
-                    else:
-                        removed_indices.add(i)
-                        break  # doc_i is removed, stop comparing it
+                    removed_indices.add(j)
 
-            if i not in removed_indices:
-                keep.append(doc_i)
+            keep.append(doc_i)
 
         if len(docs) != len(keep):
             logger.info(
