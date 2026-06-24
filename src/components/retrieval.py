@@ -1,6 +1,6 @@
 import hashlib
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings

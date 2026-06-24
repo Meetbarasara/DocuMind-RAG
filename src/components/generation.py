@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from src.components.config import Config
 from src.components.retrieval import RetrievalManager
 from src.logger import get_logger
-from src.utils import format_chat_history, format_chat_history_async
+from src.utils import format_chat_history_async
 
 logger = get_logger(__name__)
 

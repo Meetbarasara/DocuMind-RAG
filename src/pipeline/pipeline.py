@@ -11,6 +11,7 @@ Public API:
 """
 
 import asyncio
+import hashlib
 import os
 import uuid
 from collections import OrderedDict
@@ -175,8 +176,6 @@ class RAGPipeline:
         retrieval_manager,
         filename_filter=None,
         ) -> list:
-        import asyncio, hashlib as _hashlib
-
         # BUG-3 fix: generate_multi_queries is now async (it awaits the LLM
         # call instead of blocking on it) — await it here too.
         queries = await self.generation_manager.generate_multi_queries(rewritten_query)
@@ -198,7 +197,7 @@ class RAGPipeline:
         all_docs, seen = [], set()
         for docs in results:
             for doc in docs:
-                h = _hashlib.md5(doc.page_content.encode()).hexdigest()
+                h = hashlib.md5(doc.page_content.encode()).hexdigest()
                 if h not in seen:
                     seen.add(h)
                     all_docs.append(doc)
