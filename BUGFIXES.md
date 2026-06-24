@@ -884,3 +884,55 @@ To avoid re-summarizing the same conversation history with an expensive LLM call
 **The fix:** build the fingerprint from everything that was actually said — every message's role and full content — not just a couple of cheap shortcuts.
 
 **How I proved it:** I built two obviously-different conversations (one about quantum computing, one about French geography) that were deliberately the same length and shared an identical last message. Before the fix, summarizing the second one returned the *first* one's cached summary verbatim — a wrong answer served with total confidence. After the fix, each conversation gets its own correctly-computed summary.
+
+---
+
+## Logical Mistake #8: `CHUNK_OVERLAP=500` was configured but never applied
+
+**Status:** Fixed 2026-06-25 — review's claim partially correct, partially wrong (see below)
+
+### Symptom
+`config.py` defines `CHUNK_OVERLAP: int = 500`, and the README documents it in three places ("`[Chunking] ── overlap 500 ──▶`", "`CHUNK_OVERLAP | 500 | Overlap between chunks`", "Elements are chunked with semantic boundaries and overlap"). But `ingestion.py`'s call to `chunk_by_title` never passed it — chunks were produced with zero overlap, contradicting the documented behavior.
+
+### Root Cause — verified, with a correction to the review's own claim
+The review states: *"`chunk_by_title` doesn't take an overlap arg in this code, so the README's 'overlap 500' is not actually applied."* I checked this against the actually-installed `unstructured==0.22.10` before touching anything (same discipline as the BUG-11 investigation earlier in this file), and the **literal claim is wrong**: `chunk_by_title`'s real signature includes both `overlap: Optional[int]` and `overlap_all: Optional[bool]` parameters (confirmed via `inspect.signature`). So the function absolutely can take an overlap argument — the review's stated *mechanism* doesn't hold.
+
+The review's **conclusion is still correct**, just for a different reason. Reading `unstructured`'s own source (`unstructured/chunking/base.py`):
+```python
+@cached_property
+def overlap(self) -> int:
+    overlap_arg = self._kwargs.get("overlap")
+    return overlap_arg or 0          # <- defaults to 0 when not passed
+
+@cached_property
+def inter_chunk_overlap(self) -> int:
+    overlap_all_arg = self._kwargs.get("overlap_all")
+    return self.overlap if overlap_all_arg else 0   # <- 0 unless overlap_all=True
+```
+`overlap` defaults to `0`, and — more importantly — even a nonzero `overlap` only applies to *mid-text splitting of a single oversized element* unless `overlap_all=True` is **also** passed, in which case it additionally applies between separate "normal" chunks formed from whole elements (the common case, and the one the README's diagram/table actually describes). `ingestion.py` passed neither. I confirmed this isn't just a documentation-reading exercise by running real elements through the real `chunk_by_title` both ways: without `overlap`/`overlap_all`, consecutive chunks share zero text; with `overlap=200, overlap_all=True`, the next chunk visibly starts with the previous chunk's trailing text.
+
+So: the review correctly identified that overlap wasn't being applied and that the README was misleading — but for the wrong reason ("the function can't do it") rather than the right one ("the function can do it, but two specific arguments were never passed").
+
+### Fix
+[ingestion.py](src/components/ingestion.py) `build_langchain_documents` — added `overlap=self.config.CHUNK_OVERLAP, overlap_all=True` to the `chunk_by_title(...)` call for text elements. (`CHUNK_SIZE=3000` vs. `CHUNK_OVERLAP=500` comfortably satisfies the library's own validation that overlap must be less than `max_characters`.) Table and image chunks are unaffected — they're built one chunk per element with no `chunk_by_title` splitting involved, so "overlap between chunks" doesn't apply to them in this codebase.
+
+### Why this approach
+This is the minimal change that makes the code match behavior the README already (correctly) documents — no redesign of chunking, no new config, just passing through a config value that already existed for exactly this purpose. `overlap_all=True` is necessary, not optional window-dressing: passing `overlap` alone would have "fixed" only the rare case of a single element large enough to need mid-text splitting, leaving the common case (most chunk boundaries come from `chunk_by_title` deciding to start a new chunk between whole elements, not from splitting one oversized element) just as overlap-free as before.
+
+### Verification
+Added [tests/test_chunk_overlap_config.py](tests/test_chunk_overlap_config.py) with two tests:
+1. **Wiring test** (the actual application-bug reproduction): mocks `chunk_by_title` as imported into `src.components.ingestion` and asserts the kwargs `build_langchain_documents` calls it with.
+   - **Before the fix:** `kwargs.get("overlap")` was `None` — failed.
+   - **After the fix:** `overlap == 500` (`config.CHUNK_OVERLAP`) and `overlap_all is True`.
+2. **Library-semantics test** (not a red/green reproduction — a direct verification of real library behavior, the same kind of check that grounded the root-cause section above): runs real elements through the real `chunk_by_title` twice, once with no overlap args and once with `overlap=200, overlap_all=True`, and confirms shared text between consecutive chunks appears only in the second case. Required bypassing `conftest.py`'s `unstructured` stub (which exists to keep network-dependent `partition_*` modules from hanging on a sandboxed box — `chunk_by_title` needs neither, confirmed by timing a real import) — done by snapshotting and removing every `unstructured*` entry from `sys.modules`, importing fresh, then restoring the exact prior state so other tests in the session are unaffected. Confirmed this restore is clean by running the full suite (not just this file) afterward.
+
+Full suite: 71 passed. `ruff` clean on both changed files.
+
+### Explain it simply (interview answer)
+The config had a setting, `CHUNK_OVERLAP = 500`, meant to make consecutive chunks of a document share a bit of trailing/leading text — so if an answer-relevant sentence happens to land right at a chunk boundary, it still shows up in full in at least one chunk instead of getting cut in half. The README described this feature. The code defined the setting. But the actual function call that does the chunking never passed that setting along — so every chunk boundary was a clean, zero-overlap cut, the whole time.
+
+The original code review blamed this on the third-party chunking function "not supporting" overlap at all. I checked that claim against the actual library before accepting it, the same way I've checked every other claim in this review — and it's not quite right: the function *does* support overlap, there are just two separate settings for it (one for the rare case of a single huge piece of text getting split, one for the common case of two separate, normal chunks sitting next to each other), and the code was passing neither.
+
+**The fix:** pass both. One is the actual character count (pulled from the config value that already existed), the other is a flag that says "yes, apply that overlap between normal chunks too, not just inside huge split-up ones."
+
+**How I proved it:** I ran real text through the real chunking function twice — once exactly like the existing code (no overlap settings) and once with both new settings added — and checked whether the start of one chunk contained the end of the previous chunk's text. Without the settings: no overlap at all, confirming the bug. With both settings: real, visible overlap, confirming the fix actually does what the README always claimed it did. Then, separately, I mocked the chunking function so I could check the exact arguments the application's own code passes to it — proving the *fix*, not just the library feature, actually wires the configured value through.

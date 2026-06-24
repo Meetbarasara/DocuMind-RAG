@@ -162,6 +162,13 @@ class DocumentProcessor:
                 max_characters=self.config.CHUNK_SIZE,
                 new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
                 combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS,
+                # Logical Mistake #8 fix: CHUNK_OVERLAP was configured but
+                # never passed, so no overlap was ever applied. overlap_all
+                # is required too -- without it, `overlap` only applies when
+                # a single oversized element gets mid-text split, not
+                # between normal chunks formed from separate elements.
+                overlap=self.config.CHUNK_OVERLAP,
+                overlap_all=True,
             )
 
             for i, chunk in enumerate(text_chunks, start=1):
