@@ -11,7 +11,10 @@ Public API:
 """
 
 import asyncio
+import hashlib
 import os
+import uuid
+from collections import OrderedDict
 from typing import Dict, List, Optional
 
 from src.components.config import Config
@@ -40,8 +43,14 @@ class RAGPipeline:
         self.embedding_manager = EmbeddingManager(self.config)
         self.generation_manager = AnswerGeneration(self.config)
 
-        # RetrievalManager is created lazily (namespace can change per request)
-        self._retrieval_managers: Dict[str, RetrievalManager] = {}
+        # RetrievalManager is created lazily (namespace can change per
+        # request). Latency Optimization #6 fix: this used to be a plain
+        # dict with no eviction, growing without bound as distinct
+        # namespaces accumulate over the process's lifetime -- each entry
+        # holds a vectorstore client and (once hybrid search runs) a full
+        # BM25 corpus in RAM. An OrderedDict + move_to_end/popitem(last=False)
+        # gives a simple LRU bound at config.MAX_CACHED_RETRIEVAL_MANAGERS.
+        self._retrieval_managers: "OrderedDict[str, RetrievalManager]" = OrderedDict()
 
         logger.info("RAGPipeline initialised.")
 
@@ -51,18 +60,38 @@ class RAGPipeline:
 
     def _get_retrieval_manager(self, namespace: str) -> RetrievalManager:
         """Return (and cache) a RetrievalManager for the given *namespace*."""
-        if namespace not in self._retrieval_managers:
-            cfg = Config(
-                PINECONE_NAMESPACE=namespace,
-                OPENAI_API_KEY=self.config.OPENAI_API_KEY,
-                PINECONE_API_KEY=self.config.PINECONE_API_KEY,
-                PINECONE_INDEX_NAME=self.config.PINECONE_INDEX_NAME,
-                EMBEDDING_MODEL_NAME=self.config.EMBEDDING_MODEL_NAME,
-                TOP_K=self.config.TOP_K,
-                SIMILARITY_THRESHOLD=self.config.SIMILARITY_THRESHOLD,
+        # Nit fix: Pinecone treats namespace="" as a real, literal
+        # namespace (the default one) — a caller that forgot to pass a
+        # real per-user namespace would silently read/write that shared
+        # bucket instead of failing loudly. Every query/ingest/delete path
+        # goes through this one method, so this is the right chokepoint.
+        if not namespace:
+            raise CustomException(
+                "Pinecone namespace must not be empty — refusing to silently "
+                "fall back to the shared default namespace."
             )
-            self._retrieval_managers[namespace] = RetrievalManager(cfg)
-            logger.debug("Created RetrievalManager for namespace=%s", namespace)
+        if namespace in self._retrieval_managers:
+            self._retrieval_managers.move_to_end(namespace)  # mark as recently used
+            return self._retrieval_managers[namespace]
+
+        cfg = Config(
+            PINECONE_NAMESPACE=namespace,
+            OPENAI_API_KEY=self.config.OPENAI_API_KEY,
+            PINECONE_API_KEY=self.config.PINECONE_API_KEY,
+            PINECONE_INDEX_NAME=self.config.PINECONE_INDEX_NAME,
+            EMBEDDING_MODEL_NAME=self.config.EMBEDDING_MODEL_NAME,
+            TOP_K=self.config.TOP_K,
+            SIMILARITY_THRESHOLD=self.config.SIMILARITY_THRESHOLD,
+        )
+        self._retrieval_managers[namespace] = RetrievalManager(cfg)
+        logger.debug("Created RetrievalManager for namespace=%s", namespace)
+
+        if len(self._retrieval_managers) > self.config.MAX_CACHED_RETRIEVAL_MANAGERS:
+            evicted_namespace, _ = self._retrieval_managers.popitem(last=False)
+            logger.info(
+                "Evicted RetrievalManager for namespace=%s (LRU cache full, max=%d)",
+                evicted_namespace, self.config.MAX_CACHED_RETRIEVAL_MANAGERS,
+            )
         return self._retrieval_managers[namespace]
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -116,17 +145,18 @@ class RAGPipeline:
                 "Upserted %d chunks to Pinecone (namespace=%s)", len(docs), effective_namespace
             )
 
-            # ── Step 3: Update BM25 index for hybrid search ──────────────
-            # Bug 4 fix: the BM25 index was never populated after ingestion,
-            # so hybrid search always fell back silently to dense-only retrieval.
-            # Now we rebuild the index on the correct per-namespace manager.
+            # ── Step 3: Invalidate BM25 index for hybrid search ──────────
+            # BUG-4/5 fix: this used to call update_bm25_index(docs), which
+            # *replaced* the index with only this upload's chunks — a
+            # second upload silently dropped the first file's keyword
+            # coverage, and the index was empty after a restart or on a
+            # different worker. Invalidating instead means the next query
+            # rebuilds the full index straight from Pinecone (every chunk
+            # in the namespace, not just whatever this process happened to
+            # upload).
             if self.config.USE_HYBRID_SEARCH:
                 retrieval_manager = self._get_retrieval_manager(effective_namespace)
-                retrieval_manager.update_bm25_index(docs)
-                logger.info(
-                    "BM25 index updated for namespace=%s (%d docs)",
-                    effective_namespace, len(docs),
-                )
+                retrieval_manager.invalidate_bm25_index()
 
             return len(docs)
 
@@ -146,16 +176,19 @@ class RAGPipeline:
         retrieval_manager,
         filename_filter=None,
         ) -> list:
-        import asyncio, hashlib as _hashlib
-
-        queries = self.generation_manager.generate_multi_queries(rewritten_query)
+        # BUG-3 fix: generate_multi_queries is now async (it awaits the LLM
+        # call instead of blocking on it) — await it here too.
+        queries = await self.generation_manager.generate_multi_queries(rewritten_query)
 
         # Run all Pinecone searches in parallel — this alone saves 400-600ms
+        # BUG-6 fix: retrieve_candidates() (not retrieve()) — no per-query
+        # re-ranking/truncation here, so nothing is thrown away before the
+        # merge below sees every sub-query's full candidate set.
         async def search_one(q):
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(
                 None,
-                lambda: retrieval_manager.retrieve(q, filename_filter=filename_filter)
+                lambda: retrieval_manager.retrieve_candidates(q, filename_filter=filename_filter)
                 )
 
         results = await asyncio.gather(*[search_one(q) for q in queries])
@@ -164,13 +197,25 @@ class RAGPipeline:
         all_docs, seen = [], set()
         for docs in results:
             for doc in docs:
-                h = _hashlib.md5(doc.page_content.encode()).hexdigest()
+                h = hashlib.md5(doc.page_content.encode()).hexdigest()
                 if h not in seen:
                     seen.add(h)
                     all_docs.append(doc)
 
         logger.info("Parallel multi-query: %d queries → %d unique docs", len(queries), len(all_docs))
-        return all_docs
+
+        # BUG-6 fix: re-rank ONCE over the full merged pool (using the
+        # original rewritten query, not any individual sub-query), instead
+        # of each sub-query independently re-ranking+truncating before the
+        # merge ever happened. Cuts the cross-encoder from N calls to 1 and
+        # lets it choose from the complete candidate set. Off the event
+        # loop via run_in_executor, same as the retrieval calls above —
+        # the cross-encoder is a blocking CPU call.
+        loop = asyncio.get_event_loop()
+        reranked = await loop.run_in_executor(
+            None, lambda: retrieval_manager.rerank(rewritten_query, all_docs)
+        )
+        return reranked
 
 
     async def query(
@@ -250,8 +295,12 @@ class RAGPipeline:
                 yield event
 
         except Exception as e:
-            logger.exception("pipeline.query_stream failed")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            # SEC-4: str(e) used to go straight into the SSE event sent to
+            # the client — could leak provider error text or internal
+            # details. Log the real error with a reference id instead.
+            error_id = uuid.uuid4().hex[:8]
+            logger.error("[%s] pipeline.query_stream failed: %s", error_id, e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Something went wrong. (ref: {error_id})'})}\n\n"
             yield "data: [DONE]\n\n"
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -268,6 +317,11 @@ class RAGPipeline:
         try:
             retrieval_manager = self._get_retrieval_manager(namespace)
             retrieval_manager.delete_document_by_filename(filename)
+            # BUG-4/5 fix: the BM25 index is a cached view of "everything
+            # in Pinecone right now" — invalidate it so deleted chunks
+            # don't linger in keyword search results until some later
+            # upload happens to trigger a rebuild.
+            retrieval_manager.invalidate_bm25_index()
             logger.info("Deleted Pinecone vectors for %s (namespace=%s)", filename, namespace)
         except Exception as e:
             logger.exception("delete_document failed for %s", filename)
@@ -277,7 +331,7 @@ class RAGPipeline:
     #  Convenience
     # ─────────────────────────────────────────────────────────────────────────
 
-    def ingest_and_query(
+    async def ingest_and_query(
         self,
         file_path: str,
         question: str,
@@ -289,9 +343,13 @@ class RAGPipeline:
 
         Returns the same dict as :meth:`query`, plus an ``"ingested_chunks"`` key.
         """
+        # BUG-1 fix: same async/await mismatch as the chat routes — `query` is
+        # `async def`, so calling it without `await` returned a coroutine and
+        # `result["ingested_chunks"] = ...` would raise TypeError. This method
+        # itself must be async too since it now awaits `self.query(...)`.
         effective_namespace = namespace or user_id
         chunk_count = self.ingest_file(file_path, user_id=user_id, namespace=effective_namespace)
-        result = self.query(
+        result = await self.query(
             question,
             namespace=effective_namespace,
             chat_history=chat_history,
@@ -304,7 +362,7 @@ class RAGPipeline:
 #  Quick smoke test
 # ══════════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
+async def _smoke_test():
     from pathlib import Path
 
     config = Config()
@@ -321,9 +379,14 @@ if __name__ == "__main__":
     print(f"Ingested {chunks} chunks")
 
     print("\\n=== Querying ===")
-    result = pipeline.query(
+    # BUG-1 fix: query() is async — must be awaited, same as the chat routes.
+    result = await pipeline.query(
         "How does Smart Signal use reinforcement learning?",
         namespace="test_user",
     )
     print("Answer:", result["answer"])
     print("Sources:", result["sources"])
+
+
+if __name__ == "__main__":
+    asyncio.run(_smoke_test())

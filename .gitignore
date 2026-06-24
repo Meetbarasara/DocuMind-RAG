@@ -38,7 +38,10 @@ chroma/
 *.pkl
 *.docs.pkl
 
-pyproject.toml
-test_pipeline.py
+# Nit fix: pyproject.toml and test_pipeline.py used to be ignored here,
+# which would silently drop either from git if ever created — CI's
+# `pip install -e ".[dev]"` already assumes a pyproject.toml might exist.
+# Left improve.txt/production_audit.md ignored — they read as personal
+# working notes, not project config or test files.
 improve.txt
 production_audit.md

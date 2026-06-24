@@ -1,8 +1,5 @@
-import sys
 from pathlib import Path
 from typing import List
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from langchain_core.documents import Document
 from unstructured.chunking.title import chunk_by_title
@@ -25,7 +22,6 @@ from src.utils import (
     _get_metadata_fields,
     _get_page_number,
     _log_elements_analysis,
-    _stable_id,
     _table_html,
 )
 
@@ -33,6 +29,10 @@ try:
     from .config import Config
 except ImportError:
     from src.components.config import Config
+
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ── File-extension → partition function mapping ───────────────────────────
@@ -116,7 +116,7 @@ class DocumentProcessor:
                 raise ValueError(f"Unsupported file type: {extension}")
 
             elements = partition_fn(file_paths)
-            print(f"Processed {file_paths} successfully. Extracted {len(elements)} elements.\n")
+            logger.debug("Processed %s successfully. Extracted %d elements.", file_paths, len(elements))
 
             _log_elements_analysis(elements)
 
@@ -130,7 +130,7 @@ class DocumentProcessor:
             return elements
 
         except Exception as e:
-            print(f"Error processing {file_paths}: {e}")
+            logger.error("Error processing %s: %s", file_paths, e, exc_info=True)
             return []
 
     # ── Step 2: Convert elements → LangChain Documents ───────────────
@@ -156,12 +156,19 @@ class DocumentProcessor:
 
         # ── Text chunks ──────────────────────────────────────────────
         if text_elements:
-            print("Chunking TEXT elements by title...")
+            logger.debug("Chunking TEXT elements by title...")
             text_chunks = chunk_by_title(
                 elements=text_elements,
                 max_characters=self.config.CHUNK_SIZE,
                 new_after_n_chars=self.config.NEW_AFTER_N_CHARS,
                 combine_text_under_n_chars=self.config.COMBINE_TEXT_UNDER_N_CHARS,
+                # Logical Mistake #8 fix: CHUNK_OVERLAP was configured but
+                # never passed, so no overlap was ever applied. overlap_all
+                # is required too -- without it, `overlap` only applies when
+                # a single oversized element gets mid-text split, not
+                # between normal chunks formed from separate elements.
+                overlap=self.config.CHUNK_OVERLAP,
+                overlap_all=True,
             )
 
             for i, chunk in enumerate(text_chunks, start=1):
@@ -169,25 +176,31 @@ class DocumentProcessor:
                 if len(chunk_text) < 10:
                     continue
 
-                meta = _get_metadata_fields(chunk, _BASE_META_FIELDS + ["page_number"])
+                meta = _get_metadata_fields(chunk, _BASE_META_FIELDS)
                 meta.update({
                     "chunk_type": "text",
                     "source": meta["filepath"] or meta["filename"],
+                    # BUG-11 fix: text chunks pulled page_number straight
+                    # off the chunk's own metadata, with no fallback —
+                    # table/image chunks already use _get_page_number,
+                    # which now also falls back to orig_elements (the
+                    # pre-chunking elements) if the composite's own
+                    # page_number is missing.
+                    "page_number": _get_page_number(chunk),
                     "chunk_index": i,
-                    "chunk_id": _stable_id(
-                        file_path=str(meta["filepath"] or "unknown"),
-                        chunk_type="text",
-                        index=i,
-                        text=chunk_text,
-                    ),
+                    # BUG-12 fix: chunk_id was set here via _stable_id(...),
+                    # then unconditionally overwritten by embeddings.py's
+                    # own scheme right before upsert — this assignment was
+                    # dead. Removed (here and in the table/image branches
+                    # below) rather than computing an id that's never used.
                 })
                 docs.append(Document(page_content=chunk_text, metadata=meta))
 
-            print(f"Created {len(text_chunks)} TEXT chunks.")
+            logger.debug("Created %d TEXT chunks.", len(text_chunks))
 
         # ── Table chunks ─────────────────────────────────────────────
         if table_elements:
-            print("Creating TABLE chunks...")
+            logger.debug("Creating TABLE chunks...")
 
             for i, el in enumerate(table_elements, start=1):
                 html = _table_html(el)
@@ -203,20 +216,14 @@ class DocumentProcessor:
                     "chunk_index": i,
                     "table_format": "html" if html else "text",
                     "description": _create_table_description(el),
-                    "chunk_id": _stable_id(
-                        file_path=str(meta["filepath"] or "unknown"),
-                        chunk_type="table",
-                        index=i,
-                        text=table_text,
-                    ),
                 })
                 docs.append(Document(page_content=table_text, metadata=meta))
 
-            print(f"Created {len(table_elements)} TABLE chunks.")
+            logger.debug("Created %d TABLE chunks.", len(table_elements))
 
         # ── Image chunks ─────────────────────────────────────────────
         if image_elements:
-            print("Creating IMAGE chunks...")
+            logger.debug("Creating IMAGE chunks...")
 
             for i, el in enumerate(image_elements, start=1):
                 page_number = _get_page_number(el)
@@ -231,18 +238,12 @@ class DocumentProcessor:
                     "has_image_payload": bool(meta.pop("image_base64", None)),
                     "image_path": meta.pop("image_path", None),
                     "description": image_text,
-                    "chunk_id": _stable_id(
-                        file_path=str(meta["filepath"] or "unknown"),
-                        chunk_type="image",
-                        index=i,
-                        text=image_text,
-                    ),
                 })
                 docs.append(Document(page_content=image_text, metadata=meta))
 
-            print(f"Created {len(image_elements)} IMAGE chunks.")
+            logger.debug("Created %d IMAGE chunks.", len(image_elements))
 
-        print(f"Total LangChain Documents created: {len(docs)}")
+        logger.debug("Total LangChain Documents created: %d", len(docs))
         return docs
 
 

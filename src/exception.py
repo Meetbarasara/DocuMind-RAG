@@ -1,4 +1,6 @@
 import sys
+from types import ModuleType
+from typing import Optional
 
 try:
     from .logger import logging
@@ -6,7 +8,7 @@ except ImportError:
     from src.logger import logging
 
 
-def error_message_detail(error, error_detail: sys) -> str:
+def error_message_detail(error, error_detail: ModuleType) -> str:
     """Build a detailed error message including file name and line number."""
     _, _, exc_tb = error_detail.exc_info()
     file_name = exc_tb.tb_frame.f_code.co_filename
@@ -18,9 +20,19 @@ def error_message_detail(error, error_detail: sys) -> str:
 
 
 class CustomException(Exception):
-    """Application-level exception with enriched traceback info."""
+    """Application-level exception with enriched traceback info.
 
-    def __init__(self, error_message, error_detail: sys = None):
+    Note: despite an earlier review flagging this feature as "effectively
+    inert," it does fire correctly in this codebase's actual usage —
+    every real call site raises CustomException from inside an
+    ``except:`` block, where ``sys.exc_info()`` is still populated. The
+    type hint below was simply wrong (it used the ``sys`` *module* itself
+    as a type annotation); fixed to reflect what's actually expected: a
+    module exposing ``exc_info()`` (i.e. ``sys``, or a stand-in for
+    testing), or ``None``.
+    """
+
+    def __init__(self, error_message, error_detail: Optional[ModuleType] = None):
         super().__init__(error_message)
         # Use provided sys module or fall back to the imported one
         _sys = error_detail if error_detail is not None else sys

@@ -28,6 +28,10 @@ class Config:
     # ── Retrieval parameters ──────────────────────────────────────────
     TOP_K: int = 5
     SIMILARITY_THRESHOLD: float = 0.50
+    # Latency Optimization #6: bounds RAGPipeline's per-namespace
+    # RetrievalManager cache (LRU-evicted) so it can't grow unbounded as
+    # distinct users/namespaces accumulate over the process's lifetime.
+    MAX_CACHED_RETRIEVAL_MANAGERS: int = 100
 
     # ── Generation parameters ─────────────────────────────────────────
     LLM_TEMPERATURE: float = 0.1
@@ -85,9 +89,19 @@ class Config:
     SUPPORTED_FILE_TYPES: tuple = (
         "pdf", "docx", "pptx", "txt", "xlsx", "csv", "html",
     )
+    # SEC-6: cap upload size so a single request can't exhaust memory/CPU.
+    MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50MB
 
     # ── API server settings ───────────────────────────────────────────
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
-    CORS_ORIGINS: List[str] = field(default_factory=lambda: ["http://localhost:8501"])
+    # BUG-9 fix: was a hardcoded localhost-only list — env-driven now so a
+    # deployed frontend's real origin can be added without editing source.
+    CORS_ORIGINS: List[str] = field(
+        default_factory=lambda: [
+            origin.strip()
+            for origin in os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
+            if origin.strip()
+        ]
+    )
 

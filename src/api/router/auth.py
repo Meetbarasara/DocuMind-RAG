@@ -7,11 +7,18 @@ Endpoints:
     GET  /api/auth/me      — return current user info
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 
 from src.api.dependencies import get_current_user, get_db
+from src.api.error_utils import log_and_get_ref
+from src.api.limiter import limiter
 from src.components.database import SupabaseManager
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -40,12 +47,22 @@ class AuthResponse(BaseModel):
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def signup(payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
+@limiter.limit("5/minute")
+async def signup(request: Request, payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
     """Register a new user account."""
     try:
-        result = db.sign_up(payload.email, payload.password)
+        # Latency Optimization #7: db.sign_up is a blocking Supabase call.
+        result = await asyncio.to_thread(db.sign_up, payload.email, payload.password)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        # SEC-4/SEC-5: raw Supabase error text (e.g. "user already
+        # registered" vs. some other failure) used to go straight to the
+        # client, which both leaks internals and lets an attacker tell
+        # accounts apart. Log the real reason, return a generic message.
+        ref = log_and_get_ref(logger, "Sign-up failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sign-up failed. (ref: {ref})",
+        )
 
     user = result.get("user")
     if not user:
@@ -62,12 +79,20 @@ async def signup(payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(request: Request, payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
     """Authenticate a user and return JWT tokens."""
     try:
-        result = db.sign_in(payload.email, payload.password)
+        # Latency Optimization #7: db.sign_in is a blocking Supabase call.
+        result = await asyncio.to_thread(db.sign_in, payload.email, payload.password)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        # SEC-4/SEC-5: same reasoning as signup — a uniform message means
+        # "no such user" and "wrong password" look identical to the client.
+        ref = log_and_get_ref(logger, "Login failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid email or password. (ref: {ref})",
+        )
 
     user = result.get("user")
     return AuthResponse(
@@ -85,7 +110,8 @@ async def logout(
     db: SupabaseManager = Depends(get_db),
 ):
     """Invalidate the current user's session."""
-    db.sign_out(current_user["access_token"])
+    # Latency Optimization #7: db.sign_out is a blocking Supabase call.
+    await asyncio.to_thread(db.sign_out, current_user["access_token"])
     return {"message": "Logged out successfully"}
 
 

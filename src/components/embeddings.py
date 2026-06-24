@@ -28,6 +28,16 @@ class EmbeddingManager:
         if self.config.PINECONE_API_KEY:
             os.environ["PINECONE_API_KEY"] = self.config.PINECONE_API_KEY
 
+        # Latency Optimization #5 fix: this used to be rebuilt inside
+        # create_vector_store on every call -- i.e. once per file upload --
+        # even though the model name and API key never change. Building it
+        # once here and reusing it avoids paying the underlying HTTP
+        # client's setup cost on every single upload.
+        self._embedding_model = OpenAIEmbeddings(
+            model=self.config.EMBEDDING_MODEL_NAME,
+            openai_api_key=self.config.OPENAI_API_KEY,
+        )
+
     # ── Static helpers ────────────────────────────────────────────────────
 
     @staticmethod
@@ -77,11 +87,9 @@ class EmbeddingManager:
         # Resolve namespace: explicit arg wins, then fall back to config
         effective_namespace = namespace if namespace is not None else self.config.PINECONE_NAMESPACE
 
-        # ── Build the embedding model ────────────────────────────────────
-        embedding_model = OpenAIEmbeddings(
-            model=self.config.EMBEDDING_MODEL_NAME,
-            openai_api_key=self.config.OPENAI_API_KEY,
-        )
+        # Latency Optimization #5 fix: reuse the embedding model built once
+        # in __init__ instead of constructing a new one on every call.
+        embedding_model = self._embedding_model
 
         # ── Early exit: nothing to embed ─────────────────────────────────
         if not documents:
@@ -116,9 +124,17 @@ class EmbeddingManager:
             )
 
             # ── Step 2: Assign a stable chunk_id per document ────────────
+            # BUG-7 fix: this used metadata["source"] (the local temp
+            # filesystem path used during ingestion, e.g.
+            # "/tmp_uploads/report.pdf") instead of metadata["filename"]
+            # (the stable, sanitized original name). The temp path isn't a
+            # reliable prefix to delete by later — using "filename" instead
+            # makes chunk_id a stable f"{filename}::{hash}" id, so every
+            # chunk of a given file can be exhaustively listed by prefix
+            # (see RetrievalManager.delete_document_by_filename).
             for doc in documents:
-                source = doc.metadata.get("source", "unknown")
-                doc.metadata["chunk_id"] = f"{source}::{doc.metadata['content_hash']}"
+                file_key = doc.metadata.get("filename", "unknown")
+                doc.metadata["chunk_id"] = f"{file_key}::{doc.metadata['content_hash']}"
 
             # ── Step 3: Clean metadata for Pinecone compatibility ────────
             for doc in documents:

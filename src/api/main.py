@@ -25,17 +25,20 @@ logger = get_logger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Rate Limiting (Bug 6 fix)
-#  SlowAPI is already in requirements.txt but was never wired up.
-#  We attach it here at the app level so limits apply across all routers.
+#  Rate Limiting (SEC-7 fix)
+#  The Limiter previously lived here but nothing ever decorated a route with
+#  it — main.py imports the routers, so the routers couldn't import the
+#  limiter back out of main.py without a circular import. It now lives in
+#  src/api/limiter.py, and auth.py/documents.py/chat.py apply
+#  @limiter.limit(...) directly on signup/login/upload/query.
 # ──────────────────────────────────────────────────────────────────────────────
 
 try:
-    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi import _rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
-    from slowapi.util import get_remote_address
 
-    limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+    from src.api.limiter import limiter
+
     _rate_limiting_available = True
     logger.info("SlowAPI rate limiter initialised (60 req/min default)")
 except ImportError:
@@ -124,11 +127,6 @@ async def log_requests(request: Request, call_next):
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-
-# Attach the limiter to each router so decorators work
-if _rate_limiting_available:
-    for router_module in (auth, chat, documents, evaluate):
-        router_module.router.state = getattr(router_module.router, "state", None) or {}
 
 app.include_router(auth.router)
 app.include_router(documents.router)

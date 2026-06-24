@@ -6,7 +6,7 @@ Provides:
   - File metadata persistence in the ``user_documents`` Supabase table
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -15,6 +15,7 @@ from supabase import Client, create_client
 from src.components.config import Config
 from src.exception import CustomException
 from src.logger import get_logger
+from src.utils import sanitize_filename
 
 logger = get_logger(__name__)
 
@@ -33,6 +34,20 @@ class SupabaseManager:
         if not config.SUPABASE_URL or not config.SUPABASE_ANON_KEY:
             raise CustomException("SUPABASE_URL or SUPABASE_ANON_KEY is not set.")
 
+        # SEC-9 fix: this used to fall back to the anon client (with only a
+        # warning) when the service-role key was missing. Storage and admin
+        # operations (and the app's whole user-isolation model — see SEC-3)
+        # assume the service-role client is what's actually in use; silently
+        # substituting the anon client would silently change the app's
+        # security posture instead of failing loudly where a
+        # misconfiguration is easy to notice.
+        if not config.SUPABASE_SERVICE_ROLE_KEY:
+            raise CustomException(
+                "SUPABASE_SERVICE_ROLE_KEY is not set. It's required for "
+                "storage and admin operations — refusing to silently fall "
+                "back to the anon key."
+            )
+
         # Public (anon) client — used for auth operations
         self.client: Client = create_client(
             config.SUPABASE_URL,
@@ -40,18 +55,10 @@ class SupabaseManager:
         )
 
         # Service-role client — used for storage + admin metadata operations
-        # Falls back to anon client when service role key is absent
-        if config.SUPABASE_SERVICE_ROLE_KEY:
-            self.service_client: Client = create_client(
-                config.SUPABASE_URL,
-                config.SUPABASE_SERVICE_ROLE_KEY,
-            )
-        else:
-            logger.warning(
-                "SUPABASE_SERVICE_ROLE_KEY not set — using anon key for storage. "
-                "Some operations may fail due to RLS policies."
-            )
-            self.service_client = self.client
+        self.service_client: Client = create_client(
+            config.SUPABASE_URL,
+            config.SUPABASE_SERVICE_ROLE_KEY,
+        )
 
         self._bucket = config.SUPABASE_STORAGE_BUCKET
         logger.info("SupabaseManager initialised (bucket=%s)", self._bucket)
@@ -118,7 +125,14 @@ class SupabaseManager:
             # The correct approach is to call sign_out() with the JWT directly
             # so Supabase invalidates the server-side session without needing
             # the refresh token at all.
-            self.client.auth.admin.sign_out(access_token)
+            #
+            # BUG-2 fix: admin.* operations require the service-role client.
+            # self.client is the anon-key client — calling admin.sign_out on
+            # it raised every time, was caught right below, and silently
+            # returned False, so logout never actually invalidated the
+            # session server-side (the JWT stayed valid until natural
+            # expiry; only the frontend's local state was cleared).
+            self.service_client.auth.admin.sign_out(access_token)
             logger.info("sign_out: session invalidated")
             return True
         except Exception as e:
@@ -130,8 +144,16 @@ class SupabaseManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _storage_path(self, user_id: str, filename: str) -> str:
-        """Build the storage key: ``{user_id}/{filename}``."""
-        return f"{user_id}/{filename}"
+        """Build the storage key: ``{user_id}/{filename}``.
+
+        SEC-2: sanitizes *filename* to a basename so a value containing
+        ``..`` segments can't move the storage key outside the user's prefix.
+        """
+        try:
+            safe_filename = sanitize_filename(filename)
+        except ValueError as e:
+            raise CustomException(f"Invalid filename: {filename!r}") from e
+        return f"{user_id}/{safe_filename}"
 
     def upload_file(
         self, user_id: str, file_bytes: bytes, filename: str, content_type: str = "application/octet-stream"
@@ -186,6 +208,13 @@ class SupabaseManager:
         Raises:
             CustomException: if the download fails.
         """
+        # SEC-2: sanitize before building the *local* tmp_path below — this is
+        # a direct filesystem join, separate from _storage_path's own check.
+        try:
+            filename = sanitize_filename(filename)
+        except ValueError as e:
+            raise CustomException(f"Invalid filename: {filename!r}") from e
+
         storage_path = self._storage_path(user_id, filename)
         try:
             file_bytes = self.service_client.storage.from_(self._bucket).download(storage_path)
@@ -241,7 +270,9 @@ class SupabaseManager:
                 "filename": filename,
                 "file_type": file_type,
                 "size_bytes": size_bytes,
-                "uploaded_at": datetime.utcnow().isoformat(),
+                # BUG-13 fix: utcnow() is deprecated since 3.12 and naive
+                # (no tz info) — now() with UTC is tz-aware.
+                "uploaded_at": datetime.now(UTC).isoformat(),
             }
             result = (
                 self.service_client.table("user_documents")

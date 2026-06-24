@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from src.components.config import Config
 from src.components.retrieval import RetrievalManager
 from src.logger import get_logger
-from src.utils import format_chat_history, format_chat_history_async
+from src.utils import format_chat_history_async
 
 logger = get_logger(__name__)
 
@@ -124,10 +124,19 @@ class AnswerGeneration:
             )
             context_parts.append(f"{source_label}\n{doc.page_content}\n")
 
+            # BUG-8 fix: the context label above correctly defaults to
+            # "N/A" via meta.get('page_number', 'N/A') — but .get() only
+            # applies that default when the *key* is absent, not when it's
+            # present with value None. This line used to plain
+            # meta.get("page_number") with no default at all, so a missing
+            # page became `None` here while the LLM (having seen "N/A" in
+            # the label above) naturally cited "Page: N/A" — a mismatch
+            # that made _verify_citations report a correct citation as
+            # unverified.
             sources.append({
                 "source_id": i,
                 "filename": meta.get("filename"),
-                "page": meta.get("page_number"),
+                "page": meta.get("page_number") or "N/A",
                 "chunk_type": meta.get("chunk_type"),
                 "chunk_id": meta.get("chunk_id"),
             })
@@ -153,7 +162,7 @@ class AnswerGeneration:
 
     # ── Feature C: Multi-Query Generation ─────────────────────────────────
 
-    def generate_multi_queries(self, query: str) -> List[str]:
+    async def generate_multi_queries(self, query: str) -> List[str]:
         """Generate diverse reformulations of *query* for multi-query retrieval.
 
         Uses a single LLM call to produce ``config.MULTI_QUERY_COUNT`` variant
@@ -175,7 +184,10 @@ class AnswerGeneration:
             ])
             chain = multi_prompt | self.llm | StrOutputParser()
 
-            result = chain.invoke({
+            # BUG-3 fix: chain.invoke() blocks the event loop for the full
+            # LLM round-trip; ainvoke() awaits it instead, letting other
+            # requests run concurrently in the meantime.
+            result = await chain.ainvoke({
                 "query": query,
                 "count": self.config.MULTI_QUERY_COUNT,
             })
@@ -316,7 +328,10 @@ class AnswerGeneration:
         """
         context, sources = self._build_context_and_sources(retrieved_docs)
 
-        answer = self.chain.invoke({
+        # BUG-3 fix: chain.invoke() is a blocking call inside this async
+        # method — it would freeze FastAPI's event loop for the entire LLM
+        # round-trip, serializing concurrent requests. ainvoke() awaits it.
+        answer = await self.chain.ainvoke({
             "context": context,
             "question": query,
             "chat_history": await self._format_history(chat_history) if chat_history else "",
@@ -364,18 +379,25 @@ class AnswerGeneration:
         # 2. Stream LLM tokens
         full_answer = ""
         chat_history_str = await self._format_history(chat_history) if chat_history else ""
-        stream = self.chain.stream({
-            "context": context,
-            "question": query,
-            "chat_history": chat_history_str,
-        })
 
+        # BUG-3 fix: self.chain.stream(...) is a *sync* iterator — pulling
+        # from it with a plain `for` blocks the event loop on every single
+        # token, serializing every concurrent request and defeating the
+        # point of SSE streaming. astream() + `async for` yields control
+        # back between tokens instead.
         try:
-            for chunk in stream:
-                text_chunk = chunk if isinstance(chunk, str) else chunk.get("answer", "")
-                if text_chunk:
-                    full_answer += text_chunk
-                    yield f"data: {json.dumps({'type': 'token', 'content': text_chunk})}\n\n"
+            async for chunk in self.chain.astream({
+                "context": context,
+                "question": query,
+                "chat_history": chat_history_str,
+            }):
+                # Nit fix: StrOutputParser's astream() always yields a
+                # str-like chunk (confirmed empirically: it's a TextAccessor,
+                # itself a str subclass) — the dict-shaped fallback below
+                # was dead code that could never execute.
+                if chunk:
+                    full_answer += chunk
+                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
         except Exception as e:
             logger.error("SSE stream error: %s", e)
             yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"

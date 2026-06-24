@@ -7,12 +7,17 @@ Endpoints:
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user, get_pipeline
+from src.api.error_utils import log_and_get_ref
+from src.api.limiter import limiter
+from src.logger import get_logger
 from src.pipeline.pipeline import RAGPipeline
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -47,7 +52,9 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/query", response_model=ChatResponse)
+@limiter.limit("20/minute")
 async def query(
+    request: Request,
     payload: ChatRequest,
     current_user: dict = Depends(get_current_user),
     pipeline: RAGPipeline = Depends(get_pipeline),
@@ -61,16 +68,21 @@ async def query(
     ]
 
     try:
-        result = pipeline.query(
+        # BUG-1 fix: RAGPipeline.query is `async def`. Calling it without
+        # `await` returned an un-awaited coroutine, so `result["answer"]`
+        # below raised "TypeError: 'coroutine' object is not subscriptable"
+        # on every request — chat was 100% broken.
+        result = await pipeline.query(
             question=payload.question,
             namespace=user_id,
             chat_history=history,
             filename_filter=payload.filename_filter,
         )
     except Exception as e:
+        ref = log_and_get_ref(logger, "RAG query failed", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"RAG query failed: {e}",
+            detail=f"RAG query failed. (ref: {ref})",
         )
 
     return ChatResponse(
@@ -83,7 +95,9 @@ async def query(
 
 
 @router.post("/query/stream")
+@limiter.limit("20/minute")
 async def query_stream(
+    request: Request,
     payload: ChatRequest,
     current_user: dict = Depends(get_current_user),
     pipeline: RAGPipeline = Depends(get_pipeline),
@@ -96,13 +110,21 @@ async def query_stream(
         for msg in (payload.chat_history or [])
     ]
 
-    def event_generator():
-        yield from pipeline.query_stream(
+    # BUG-1 fix: RAGPipeline.query_stream is an async generator, but this
+    # generator was `def` (sync) doing `yield from` over it. Sync `yield from`
+    # only works on objects with __iter__; async generators only implement
+    # __aiter__/__anext__, so the first iteration raised
+    # "TypeError: 'async_generator' object is not iterable" and no SSE bytes
+    # ever reached the client. Making the generator `async def` and using
+    # `async for` lets Starlette drive it correctly.
+    async def event_generator():
+        async for event in pipeline.query_stream(
             question=payload.question,
             namespace=user_id,
             chat_history=history,
             filename_filter=payload.filename_filter,
-        )
+        ):
+            yield event
 
     return StreamingResponse(
         event_generator(),

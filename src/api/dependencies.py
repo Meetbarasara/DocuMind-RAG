@@ -1,5 +1,6 @@
 """dependencies.py — Shared FastAPI dependency-injection helpers."""
 
+import asyncio
 from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, status
@@ -66,7 +67,12 @@ async def get_current_user(
         )
 
     token = authorization.split(" ", 1)[1]
-    user = db.get_current_user(token)
+    # Latency Optimization #7 fix: db.get_current_user() is a blocking
+    # network call to Supabase's auth API, and this dependency runs on
+    # EVERY authenticated request. Without to_thread it blocks FastAPI's
+    # event loop for that round-trip on every single request, serializing
+    # all concurrent traffic across the whole API, not just one route.
+    user = await asyncio.to_thread(db.get_current_user, token)
 
     if not user:
         raise HTTPException(
