@@ -273,6 +273,23 @@ class RetrievalManager:
         try:
             bm25_docs = self._bm25_retriever.invoke(query)
 
+            # Logical Mistake #3 fix: BM25Retriever.invoke() (rank_bm25's
+            # get_top_n) is a plain argsort over the whole corpus and always
+            # returns exactly k docs, even ones with zero term overlap with
+            # the query, in a small namespace. RRF below fuses by *rank*,
+            # not score, so those zero-relevance docs would otherwise ride
+            # into the merged result with no quality check at all.
+            # SIMILARITY_THRESHOLD doesn't apply here -- it's calibrated for
+            # cosine similarity, a different scale than BM25's raw score --
+            # so the scale-appropriate gate is BM25's own score: drop
+            # anything that didn't actually match a single term.
+            processed_query = self._bm25_retriever.preprocess_func(query)
+            bm25_scores = self._bm25_retriever.vectorizer.get_scores(processed_query)
+            score_by_doc_id = {
+                id(d): s for d, s in zip(self._bm25_retriever.docs, bm25_scores)
+            }
+            bm25_docs = [d for d in bm25_docs if score_by_doc_id.get(id(d), 0) > 0]
+
             # Apply filename filter to BM25 results if needed
             if filename_filter:
                 bm25_docs = [

@@ -781,3 +781,39 @@ The original review grouped these as low-severity. Same discipline as everywhere
 Most of these were small enough that the interesting part isn't the fix itself, it's the *process*: for three different low-priority complaints in this list (and a few bigger ones earlier in this session), I tested whether the claimed problem was even real before changing anything — and two of them weren't, or weren't anymore. The exception-enrichment feature actually works in real usage, it was just mislabeled. The "no tests" complaint quietly fixed itself as a side effect of everything else I'd already done. That's worth remembering for an interview: a code review or bug report is a *hypothesis*, not a verdict — confirming it against the actual running code, every time, is what separates "I fixed ten things" from "I fixed the seven that were real and can tell you exactly why the other three weren't."
 
 For the ones that *were* real: a couple were genuine one-liners (a wrong type hint, a hardcoded URL). The more interesting one was the `setup.py`/`requirements.txt` pair, because they're coupled — pinning versions without first fixing how the comments get parsed would have made the comment-parsing bug *worse*, not better. I fixed the parser first, then verified it against the real file using the exact validation library `setuptools` itself uses internally, then actually ran the real install end-to-end rather than trusting my own reasoning about whether it would work.
+
+---
+
+## Logical Mistake #3: BM25-only documents bypassed `SIMILARITY_THRESHOLD` entirely
+
+**Status:** Fixed 2026-06-25
+
+### Symptom
+`_dense_retrieve` ([retrieval.py](src/components/retrieval.py)) correctly drops dense results below `SIMILARITY_THRESHOLD`. But `_hybrid_retrieve`'s Reciprocal Rank Fusion merges dense and BM25 results by **rank**, not score — a document that only BM25 surfaced contributes an RRF score purely from its position in BM25's result list, with no relevance check of any kind.
+
+### Root Cause
+Confirmed empirically against the real, installed `rank_bm25`/`langchain_community.BM25Retriever` rather than assuming: `BM25Retriever.invoke()` calls `rank_bm25`'s `get_top_n()`, which is a plain `np.argsort(scores)[::-1][:n]` — it always returns exactly `k` documents, with **no minimum-score cutoff**. I verified this directly: querying `"fox dog"` against a 3-document corpus where two documents (about physics and stocks) share zero words with the query returned BM25 scores of exactly `0.0` for those two — yet `BM25Retriever.invoke()` still returned them as if they were real matches, because the corpus only had 3 documents and `k=3` (or, in production, `k=TOP_K=5`). In this app's per-user namespaces, small document counts are the common case, not an edge case — so this isn't theoretical.
+
+### Fix
+[retrieval.py](src/components/retrieval.py) `_hybrid_retrieve` — after getting `bm25_docs`, filter out any document whose BM25 score is not greater than `0`, computed via the retriever's own `vectorizer.get_scores(...)` (the same `rank_bm25` API `get_top_n` itself uses internally, just without the cutoff `get_top_n` is missing). Matched back to documents by object identity (`id(d)`) since `BM25Retriever` returns the exact same `Document` objects it was built from, not copies.
+
+### Why this approach
+Reusing `SIMILARITY_THRESHOLD`'s numeric value (`0.50`) against BM25 scores would have been a *different* bug, not a fix — cosine similarity is roughly bounded `[0, 1]` (higher is better), while BM25 scores are unbounded and depend on corpus statistics (term frequency, document length, collection size). The two numbers aren't on comparable scales, so a single shared threshold value can't meaningfully gate both. The correct, scale-appropriate quality gate for the BM25 branch is BM25's *own* score: `> 0` means "shares at least one term with the query," `0` means no lexical relevance whatsoever. That's the minimal signal needed to close the specific gap the review described (zero-relevance documents riding through on rank alone) without inventing a new cross-scale heuristic or requiring extra network calls (e.g. fetching a dense similarity score for every BM25-only candidate, which would also slow down every hybrid query).
+
+This intentionally does *not* require a BM25-surfaced document to also appear in dense's results — a real keyword match that dense's embeddings missed semantically is exactly the value hybrid search is supposed to add. Only documents with literally no relevance signal under *either* method are excluded.
+
+### Verification
+Added [tests/test_similarity_threshold_bypass.py](tests/test_similarity_threshold_bypass.py):
+- First asserts the premise directly against the real `rank_bm25` scorer (not a mock): two unrelated documents score exactly `0.0` against the test query, one related document scores `> 0`.
+- **Before the fix:** `_hybrid_retrieve("fox dog")` on a 3-doc BM25 corpus + 1 dense hit returned all 4 documents merged together — including the two zero-relevance ones.
+- **After the fix:** the same call returns only the genuinely relevant 2 (the dense hit and the real BM25 keyword match); the zero-relevance documents are gone.
+- Full suite: 64 passed. `pyflakes`/`ruff` clean on the changed file (one pre-existing unrelated `Optional` unused-import warning in `retrieval.py`, confirmed via `git diff` to predate this change).
+
+### Explain it simply (interview answer)
+My search had two engines: one that understands *meaning* (dense/embedding search) and one that matches *exact words* (BM25 keyword search), combined by blending their rankings together. The meaning-based engine had a sensible rule: "only show results that are genuinely similar enough" — measured on a 0-to-1 similarity scale. The keyword engine had no such rule at all.
+
+The keyword engine's actual library always hands back exactly the number of results you ask for, ranked best-to-worst — even if the "best" ones share literally zero words with your question, because there was nothing better available in that user's small document collection. Since my code combined the two engines by blending their *rankings* (1st place, 2nd place, etc.) rather than their actual scores, a completely irrelevant document that happened to rank "3rd out of 3" in the keyword engine could still squeeze into the final results — nothing ever checked whether 3rd place was actually any good.
+
+**The fix:** before blending the keyword engine's results in, I now ask it for the actual relevance score behind each one (a feature the library already has, it just wasn't being used) and throw out anything scoring exactly zero — no shared words, no business being in the results. I deliberately didn't reuse the *meaning* engine's 0-to-1 threshold number for this, because the two engines measure relevance in totally different, non-comparable units — that would've been swapping one bug for another.
+
+**How I proved it:** I picked a query ("fox dog") and a tiny 3-document collection where I knew, by construction, that two of the documents shared no words with it at all. I confirmed with the real scoring library that those two genuinely scored `0.0` — then showed they still came back from my code's hybrid search anyway. After the fix, they're filtered out, while a real keyword match and a real semantic match both still come through correctly.
