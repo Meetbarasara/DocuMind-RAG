@@ -7,6 +7,8 @@ Endpoints:
     GET  /api/auth/me      — return current user info
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 
@@ -49,7 +51,8 @@ class AuthResponse(BaseModel):
 async def signup(request: Request, payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
     """Register a new user account."""
     try:
-        result = db.sign_up(payload.email, payload.password)
+        # Latency Optimization #7: db.sign_up is a blocking Supabase call.
+        result = await asyncio.to_thread(db.sign_up, payload.email, payload.password)
     except Exception as e:
         # SEC-4/SEC-5: raw Supabase error text (e.g. "user already
         # registered" vs. some other failure) used to go straight to the
@@ -80,7 +83,8 @@ async def signup(request: Request, payload: AuthRequest, db: SupabaseManager = D
 async def login(request: Request, payload: AuthRequest, db: SupabaseManager = Depends(get_db)):
     """Authenticate a user and return JWT tokens."""
     try:
-        result = db.sign_in(payload.email, payload.password)
+        # Latency Optimization #7: db.sign_in is a blocking Supabase call.
+        result = await asyncio.to_thread(db.sign_in, payload.email, payload.password)
     except Exception as e:
         # SEC-4/SEC-5: same reasoning as signup — a uniform message means
         # "no such user" and "wrong password" look identical to the client.
@@ -106,7 +110,8 @@ async def logout(
     db: SupabaseManager = Depends(get_db),
 ):
     """Invalidate the current user's session."""
-    db.sign_out(current_user["access_token"])
+    # Latency Optimization #7: db.sign_out is a blocking Supabase call.
+    await asyncio.to_thread(db.sign_out, current_user["access_token"])
     return {"message": "Logged out successfully"}
 
 
