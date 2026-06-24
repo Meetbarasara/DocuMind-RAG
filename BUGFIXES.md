@@ -936,3 +936,34 @@ The original code review blamed this on the third-party chunking function "not s
 **The fix:** pass both. One is the actual character count (pulled from the config value that already existed), the other is a flag that says "yes, apply that overlap between normal chunks too, not just inside huge split-up ones."
 
 **How I proved it:** I ran real text through the real chunking function twice — once exactly like the existing code (no overlap settings) and once with both new settings added — and checked whether the start of one chunk contained the end of the previous chunk's text. Without the settings: no overlap at all, confirming the bug. With both settings: real, visible overlap, confirming the fix actually does what the README always claimed it did. Then, separately, I mocked the chunking function so I could check the exact arguments the application's own code passes to it — proving the *fix*, not just the library feature, actually wires the configured value through.
+
+---
+
+## Latency Optimization #5: Embedding model rebuilt on every upload instead of once
+
+**Status:** Fixed 2026-06-25
+
+### Symptom
+`EmbeddingManager.create_vector_store` ([embeddings.py](src/components/embeddings.py)) constructed a brand-new `OpenAIEmbeddings(...)` on every single call — and since `create_vector_store` runs once per file upload (via `RAGPipeline.ingest_file`), every upload paid the cost of spinning up a fresh embeddings client (and its underlying HTTP client) even though the model name and API key never change between calls.
+
+### Root Cause
+The embedding model was constructed inline inside the method body instead of once at the object's lifetime scope. `EmbeddingManager` itself is a long-lived singleton (one instance per `RAGPipeline`, which is itself cached as a singleton via `get_pipeline()`), so there was no reason for the model it depends on to be rebuilt more often than the manager itself.
+
+### Fix
+[embeddings.py](src/components/embeddings.py) — moved the `OpenAIEmbeddings(...)` construction into `EmbeddingManager.__init__`, stored as `self._embedding_model`. `create_vector_store` now reuses it (both on the normal path and the "nothing to embed" early-exit path, which previously built its own separate local copy too).
+
+### Why this approach
+This is the same fix shape the review asked for ("construct once and reuse") with no behavior change — same model, same key, same `PineconeVectorStore` usage downstream; only *when* the embeddings client gets built changes (once, at manager-construction time, instead of once per upload).
+
+### Verification
+Added [tests/test_embedding_model_reuse.py](tests/test_embedding_model_reuse.py):
+- **Before the fix:** two `create_vector_store` calls (different namespaces) constructed 2 separate `OpenAIEmbeddings` instances; a third test confirmed the "no documents" early-exit path builds yet another separate instance.
+- **After the fix:** both calls reuse the same instance — count stays at 1 regardless of how many times `create_vector_store` is called, including through the early-exit path.
+- Full suite: 73 passed. `ruff` clean on both changed files.
+
+### Explain it simply (interview answer)
+Every time a user uploaded a file, my code built a brand-new connection to OpenAI's embedding API from scratch — even though it was always the exact same model, with the exact same API key, talking to the exact same place. That's like getting a new phone and dialing a fresh number every single time you call the same person, instead of just keeping their contact saved.
+
+**The fix:** build that connection once, when the manager itself is created, and reuse it for every upload after that.
+
+**How I proved it:** I replaced the real embedding-client class with a fake one that just counts how many times it gets constructed, then called the upload-embedding method twice. Before the fix: 2 separate instances. After the fix: 1, reused both times.

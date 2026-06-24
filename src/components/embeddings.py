@@ -28,6 +28,16 @@ class EmbeddingManager:
         if self.config.PINECONE_API_KEY:
             os.environ["PINECONE_API_KEY"] = self.config.PINECONE_API_KEY
 
+        # Latency Optimization #5 fix: this used to be rebuilt inside
+        # create_vector_store on every call -- i.e. once per file upload --
+        # even though the model name and API key never change. Building it
+        # once here and reusing it avoids paying the underlying HTTP
+        # client's setup cost on every single upload.
+        self._embedding_model = OpenAIEmbeddings(
+            model=self.config.EMBEDDING_MODEL_NAME,
+            openai_api_key=self.config.OPENAI_API_KEY,
+        )
+
     # ── Static helpers ────────────────────────────────────────────────────
 
     @staticmethod
@@ -77,11 +87,9 @@ class EmbeddingManager:
         # Resolve namespace: explicit arg wins, then fall back to config
         effective_namespace = namespace if namespace is not None else self.config.PINECONE_NAMESPACE
 
-        # ── Build the embedding model ────────────────────────────────────
-        embedding_model = OpenAIEmbeddings(
-            model=self.config.EMBEDDING_MODEL_NAME,
-            openai_api_key=self.config.OPENAI_API_KEY,
-        )
+        # Latency Optimization #5 fix: reuse the embedding model built once
+        # in __init__ instead of constructing a new one on every call.
+        embedding_model = self._embedding_model
 
         # ── Early exit: nothing to embed ─────────────────────────────────
         if not documents:
