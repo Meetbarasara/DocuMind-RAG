@@ -13,6 +13,7 @@ Public API:
 import asyncio
 import os
 import uuid
+from collections import OrderedDict
 from typing import Dict, List, Optional
 
 from src.components.config import Config
@@ -41,8 +42,14 @@ class RAGPipeline:
         self.embedding_manager = EmbeddingManager(self.config)
         self.generation_manager = AnswerGeneration(self.config)
 
-        # RetrievalManager is created lazily (namespace can change per request)
-        self._retrieval_managers: Dict[str, RetrievalManager] = {}
+        # RetrievalManager is created lazily (namespace can change per
+        # request). Latency Optimization #6 fix: this used to be a plain
+        # dict with no eviction, growing without bound as distinct
+        # namespaces accumulate over the process's lifetime -- each entry
+        # holds a vectorstore client and (once hybrid search runs) a full
+        # BM25 corpus in RAM. An OrderedDict + move_to_end/popitem(last=False)
+        # gives a simple LRU bound at config.MAX_CACHED_RETRIEVAL_MANAGERS.
+        self._retrieval_managers: "OrderedDict[str, RetrievalManager]" = OrderedDict()
 
         logger.info("RAGPipeline initialised.")
 
@@ -62,18 +69,28 @@ class RAGPipeline:
                 "Pinecone namespace must not be empty — refusing to silently "
                 "fall back to the shared default namespace."
             )
-        if namespace not in self._retrieval_managers:
-            cfg = Config(
-                PINECONE_NAMESPACE=namespace,
-                OPENAI_API_KEY=self.config.OPENAI_API_KEY,
-                PINECONE_API_KEY=self.config.PINECONE_API_KEY,
-                PINECONE_INDEX_NAME=self.config.PINECONE_INDEX_NAME,
-                EMBEDDING_MODEL_NAME=self.config.EMBEDDING_MODEL_NAME,
-                TOP_K=self.config.TOP_K,
-                SIMILARITY_THRESHOLD=self.config.SIMILARITY_THRESHOLD,
+        if namespace in self._retrieval_managers:
+            self._retrieval_managers.move_to_end(namespace)  # mark as recently used
+            return self._retrieval_managers[namespace]
+
+        cfg = Config(
+            PINECONE_NAMESPACE=namespace,
+            OPENAI_API_KEY=self.config.OPENAI_API_KEY,
+            PINECONE_API_KEY=self.config.PINECONE_API_KEY,
+            PINECONE_INDEX_NAME=self.config.PINECONE_INDEX_NAME,
+            EMBEDDING_MODEL_NAME=self.config.EMBEDDING_MODEL_NAME,
+            TOP_K=self.config.TOP_K,
+            SIMILARITY_THRESHOLD=self.config.SIMILARITY_THRESHOLD,
+        )
+        self._retrieval_managers[namespace] = RetrievalManager(cfg)
+        logger.debug("Created RetrievalManager for namespace=%s", namespace)
+
+        if len(self._retrieval_managers) > self.config.MAX_CACHED_RETRIEVAL_MANAGERS:
+            evicted_namespace, _ = self._retrieval_managers.popitem(last=False)
+            logger.info(
+                "Evicted RetrievalManager for namespace=%s (LRU cache full, max=%d)",
+                evicted_namespace, self.config.MAX_CACHED_RETRIEVAL_MANAGERS,
             )
-            self._retrieval_managers[namespace] = RetrievalManager(cfg)
-            logger.debug("Created RetrievalManager for namespace=%s", namespace)
         return self._retrieval_managers[namespace]
 
     # ─────────────────────────────────────────────────────────────────────────

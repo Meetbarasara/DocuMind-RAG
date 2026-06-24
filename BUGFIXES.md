@@ -967,3 +967,36 @@ Every time a user uploaded a file, my code built a brand-new connection to OpenA
 **The fix:** build that connection once, when the manager itself is created, and reuse it for every upload after that.
 
 **How I proved it:** I replaced the real embedding-client class with a fake one that just counts how many times it gets constructed, then called the upload-embedding method twice. Before the fix: 2 separate instances. After the fix: 1, reused both times.
+
+---
+
+## Latency Optimization #6: Per-namespace RetrievalManager cache had no eviction
+
+**Status:** Fixed 2026-06-25
+
+### Symptom
+`RAGPipeline._retrieval_managers` ([pipeline.py](src/pipeline/pipeline.py)) cached one `RetrievalManager` per namespace in a plain `dict`, populated by `_get_retrieval_manager` with no eviction of any kind. `RAGPipeline` itself is a long-lived singleton (`get_pipeline()`), so this dict lives for the entire process lifetime — every distinct namespace (user) that ever queries or uploads adds one more entry that's never removed. Each entry holds a `PineconeVectorStore` client, an `OpenAIEmbeddings` client, and — once hybrid search runs for that namespace — the namespace's full BM25 corpus in RAM.
+
+### Root Cause
+The cache was written as "create once, keep forever," with no bound on how many distinct namespaces it would accumulate. That's fine for a handful of users; it's an unbounded memory leak for an app meant to serve many users over a long-running process.
+
+### Fix
+[pipeline.py](src/pipeline/pipeline.py) — switched `_retrieval_managers` from a plain `dict` to a `collections.OrderedDict`, used as a simple LRU cache:
+- A cache hit calls `move_to_end(namespace)` to mark it as recently used before returning it.
+- A cache miss constructs a new `RetrievalManager` as before, then — if the cache now exceeds `config.MAX_CACHED_RETRIEVAL_MANAGERS` (new config field, default `100`) — evicts the least-recently-used entry via `popitem(last=False)`.
+
+### Why this approach
+`OrderedDict.move_to_end`/`popitem(last=False)` is the standard, minimal way to build an LRU cache without adding a new dependency (Python's `functools.lru_cache` doesn't fit here — this cache is keyed by a runtime string and needs explicit, manual invalidation semantics, not a decorator over a pure function). Evicting on every insert that crosses the bound (rather than batching evictions) keeps the cache size predictable at all times. No explicit cleanup of the evicted `RetrievalManager`'s resources is needed — `PineconeVectorStore`/`OpenAIEmbeddings` are lightweight SDK client wrappers with no persistent connections that require an explicit `.close()`; dropping the last reference is sufficient for normal garbage collection.
+
+### Verification
+Added [tests/test_retrieval_manager_cache_lru.py](tests/test_retrieval_manager_cache_lru.py), constructing a real `RAGPipeline` (safe — its `__init__` doesn't hit network) with `RetrievalManager` itself faked out (constructing the real class hits Pinecone immediately, same reasoning as the BUG-4/5 and namespace-guard tests) and a small `MAX_CACHED_RETRIEVAL_MANAGERS=2` bound for a fast, deterministic test:
+- **Before the fix:** `Config(MAX_CACHED_RETRIEVAL_MANAGERS=2)` raised `TypeError: unexpected keyword argument` — the bound didn't exist as a concept at all.
+- **After the fix:** populating 10 distinct namespaces never grows the cache past 2 entries; touching an older entry again protects it from eviction (the *other*, untouched entry is evicted instead, not whichever happens to be oldest by insertion order); repeated lookups for the same namespace reuse the identical cached instance without evicting anything.
+- Full suite: 76 passed. `ruff`/`pyflakes` clean on all three changed files (one pre-existing, unrelated `E401` multiple-imports warning elsewhere in `pipeline.py`, confirmed via `git diff` to predate this change).
+
+### Explain it simply (interview answer)
+My app kept a "phone book" mapping each user to their own dedicated search engine instance, so it didn't have to rebuild one from scratch on every single question. The problem: nothing ever removed an entry from that phone book. Every new user who ever asked a question added one more permanent entry — for an app meant to run for weeks or months serving many different users, that phone book would just keep growing forever, slowly eating more and more memory with no ceiling.
+
+**The fix:** cap the phone book at a fixed size (100 entries by default), and when it's full and a new user shows up, kick out whichever entry hasn't been used in the longest time — the same idea your browser uses to manage cached pages, or your phone uses to manage recently-used apps.
+
+**How I proved it:** I set the cap artificially low (2) for a fast test, then simulated 10 different users showing up one after another and checked the phone book never grew past 2 entries. I also checked the *right* entry gets kicked out — if I "use" an old entry again right before a new one arrives, that freshly-touched entry survives and a genuinely-unused one gets evicted instead, proving it's really tracking recency of use, not just insertion order.

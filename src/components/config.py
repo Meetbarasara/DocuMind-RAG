@@ -28,6 +28,10 @@ class Config:
     # ── Retrieval parameters ──────────────────────────────────────────
     TOP_K: int = 5
     SIMILARITY_THRESHOLD: float = 0.50
+    # Latency Optimization #6: bounds RAGPipeline's per-namespace
+    # RetrievalManager cache (LRU-evicted) so it can't grow unbounded as
+    # distinct users/namespaces accumulate over the process's lifetime.
+    MAX_CACHED_RETRIEVAL_MANAGERS: int = 100
 
     # ── Generation parameters ─────────────────────────────────────────
     LLM_TEMPERATURE: float = 0.1
