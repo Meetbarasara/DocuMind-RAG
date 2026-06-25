@@ -94,14 +94,18 @@ weakest features) are **removed or default-off** — they add latency and code f
   still work without dragging the heavy deps back in. Files: `retrieval.py`, `config.py`,
   `main.py`, `requirements.txt`, `.env.example`, tests.
 
-**L3 — Make multi-query optional and OFF by default.**
-- It costs an extra LLM round-trip (~400–800ms) + Nx retrievals for marginal recall once you have
-  rerank. Flip `USE_MULTI_QUERY=False`; keep it as a "high-recall mode" flag. Files: `config.py`,
-  `pipeline.py`, `generation.py`.
+**L3 — Make multi-query optional and OFF by default.** ✅ *Done.*
+- It cost an extra LLM round-trip (~400–800ms) + Nx retrievals/embeddings for marginal recall now
+  that Cohere reranking handles precision. Flipped `USE_MULTI_QUERY=False` (kept as an opt-in
+  "high-recall mode" flag — `generate_multi_queries` short-circuits to `[query]` when off, so no
+  LLM call). A guard test pins the default; the BUG-3 timing test forces it on to stay meaningful.
+  Files: `config.py`, tests.
 
-**L4 — Embed the query once, reuse it.** The cache lookup (Pillar C) and dense retrieval both need
-the query vector — compute it once per request and pass it to both. Saves one embedding call on
-every cache miss. Files: `pipeline.py`.
+**L4 — Embed the query once, reuse it.** ⏸️ *Folded into C1/C2 (cache).* The reuse only pays off
+once there's a cache to reuse the vector *into* — embedding once and passing the vector to both the
+cache lookup and Pinecone retrieval. Doing it before the cache exists is premature plumbing for no
+gain. Note: **L3 already cut us to one embedding per query** (multi-query was the only source of
+N embeddings), so there's no redundant embedding to remove today. Deferred to the C1/C2 step.
 
 **L5 — Frontend: drop the blocking SSE fallback.** Replace the auto-retry-with-blocking-query in
 `frontend/pages/chat.py` with a "Connection interrupted — Retry" button. Files: `chat.py`.
@@ -285,7 +289,7 @@ To keep it interview-explainable (this is as important as what we add):
 Do the **simplifying** perf wins early; they delete code and de-risk demos.
 
 1. **L2 — Cohere rerank** ✅ *done* (removed `sentence-transformers`+`torch`; graceful skip fallback).
-2. **L3/L4 — multi-query off by default + embed-once** (removes a sequential LLM hop).
+2. **L3 — multi-query off by default** ✅ *done* (removes a sequential LLM hop). *(L4 embed-once folded into C1.)*
 3. **L5 — frontend SSE fallback → retry button** (tiny UX fix).
 4. **C1 — Redis exact-match cache + C3 invalidation** (the latency headline; namespace-safe).
 5. **O1–O3 — LangSmith tracing + per-stage timings** (now you can *measure* steps 1–4).

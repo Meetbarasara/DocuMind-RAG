@@ -60,8 +60,11 @@ class Config:
     RERANKER_TOP_K: int = 3                 # keep top N after re-ranking
 
     # Feature C: Multi-Query Retrieval
-    USE_MULTI_QUERY: bool = True
-    MULTI_QUERY_COUNT: int = 3              # number of query reformulations
+    # L3: OFF by default — it adds an LLM round-trip + N extra retrievals to the
+    # hot path for marginal recall now that Cohere reranking handles precision.
+    # Flip on for a high-recall mode when latency is less critical.
+    USE_MULTI_QUERY: bool = False
+    MULTI_QUERY_COUNT: int = 3              # variants generated when enabled
 
     # Feature D: Citation Verification (post-generation)
     USE_CITATION_VERIFICATION: bool = True

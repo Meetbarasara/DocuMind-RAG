@@ -121,6 +121,10 @@ async def test_generate_multi_queries_does_not_block_event_loop(generator, monke
     monkeypatch.setattr(type(generator.llm), "invoke", fake_invoke)
     monkeypatch.setattr(type(generator.llm), "ainvoke", fake_ainvoke)
 
+    # L3 flipped USE_MULTI_QUERY off by default; force it on so this test still
+    # exercises the LLM-backed multi-query path it exists to cover.
+    generator.config.USE_MULTI_QUERY = True
+
     start = time.perf_counter()
     await asyncio.gather(
         generator.generate_multi_queries("q1"),
