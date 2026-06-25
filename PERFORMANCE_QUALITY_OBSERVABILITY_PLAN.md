@@ -107,8 +107,11 @@ cache lookup and Pinecone retrieval. Doing it before the cache exists is prematu
 gain. Note: **L3 already cut us to one embedding per query** (multi-query was the only source of
 N embeddings), so there's no redundant embedding to remove today. Deferred to the C1/C2 step.
 
-**L5 — Frontend: drop the blocking SSE fallback.** Replace the auto-retry-with-blocking-query in
-`frontend/pages/chat.py` with a "Connection interrupted — Retry" button. Files: `chat.py`.
+**L5 — Frontend: drop the blocking SSE fallback.** ✅ *Done.* The stream path no longer silently
+re-fires a full *blocking* query on a dropped connection (that doubled the cost of every hiccup and
+could hang the UI). A `_stream_answer` helper now reports `interrupted`; the page shows a clear
+"interrupted" message + a **Retry** button that resends the same prompt, and a broken turn is never
+appended to history. Files: `chat.py`.
 
 ### Pillar Q — QUALITY
 
@@ -290,7 +293,7 @@ Do the **simplifying** perf wins early; they delete code and de-risk demos.
 
 1. **L2 — Cohere rerank** ✅ *done* (removed `sentence-transformers`+`torch`; graceful skip fallback).
 2. **L3 — multi-query off by default** ✅ *done* (removes a sequential LLM hop). *(L4 embed-once folded into C1.)*
-3. **L5 — frontend SSE fallback → retry button** (tiny UX fix).
+3. **L5 — frontend SSE fallback → retry button** ✅ *done* (no silent expensive re-query).
 4. **C1 — Redis exact-match cache + C3 invalidation** (the latency headline; namespace-safe).
 5. **O1–O3 — LangSmith tracing + per-stage timings** (now you can *measure* steps 1–4).
 6. **Q1 — token-based chunking** (folds into dropping `unstructured`, slimming B2).

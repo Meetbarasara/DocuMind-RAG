@@ -6,10 +6,8 @@ import streamlit as st
 
 from frontend.utils import (
     api_list_documents,
-    api_query,
     api_query_stream,
     format_file_size,
-    show_error,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -78,6 +76,49 @@ def _sidebar_documents() -> Optional[str]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _stream_answer(
+    prompt: str, history_for_api: List[Dict], filename_filter: Optional[str]
+):
+    """Stream one answer into a fresh assistant bubble.
+
+    Returns ``(full_answer, sources, interrupted)``. L5: on a mid-stream error
+    event or a dropped connection it stops cleanly and reports
+    ``interrupted=True`` — it no longer silently re-fires a full *blocking*
+    re-query (that doubled the cost of every hiccup and could hang the UI for
+    seconds). The caller offers an explicit Retry instead.
+    """
+    sources: List[Dict] = []
+    full_answer = ""
+    interrupted = False
+
+    with st.chat_message("ai"):
+        placeholder = st.empty()
+        try:
+            for event in api_query_stream(prompt, history_for_api, filename_filter):
+                etype = event.get("type")
+                if etype == "sources":
+                    sources = event.get("sources", [])
+                elif etype == "token":
+                    full_answer += event.get("content", "")
+                    placeholder.markdown(full_answer + "▌")
+                elif etype == "error":
+                    interrupted = True
+                    break
+        except Exception:
+            interrupted = True
+
+        # No tokens at all also means the stream never really delivered.
+        if interrupted or not full_answer:
+            interrupted = True
+            placeholder.markdown("⚠️ _Connection interrupted before the answer finished._")
+        else:
+            placeholder.markdown(full_answer)
+            if sources:
+                _render_sources(sources)
+
+    return full_answer, sources, interrupted
+
+
 def render_chat_page() -> None:
     """Render the main streaming chat interface."""
 
@@ -91,6 +132,7 @@ def render_chat_page() -> None:
     with col_btn:
         if st.button("🆕 New Chat", key="new_chat", use_container_width=True):
             st.session_state["chat_history"] = []
+            st.session_state.pop("retry_prompt", None)
             st.rerun()
 
     # ── Render existing messages ──────────────────────────────────────────
@@ -100,60 +142,45 @@ def render_chat_page() -> None:
             if msg.get("sources"):
                 _render_sources(msg["sources"])
 
-    # ── Chat input ────────────────────────────────────────────────────────
-    if prompt := st.chat_input("Ask anything about your documents…"):
-        # Display user message
-        with st.chat_message("human"):
-            st.markdown(prompt)
+    # ── Retry affordance for a previously interrupted answer (L5) ─────────
+    # Streaming no longer silently re-fires a slow blocking query on a dropped
+    # connection — the user decides whether to resend the same question.
+    pending_retry = st.session_state.get("retry_prompt")
+    retry_clicked = False
+    if pending_retry:
+        st.warning("⚠️ The last answer was interrupted before it finished.")
+        retry_clicked = st.button(f"🔄 Retry: {pending_retry[:60]}", key="retry_btn")
 
-        # Build API history (role + content only)
-        history_for_api = [
-            {"role": m["role"], "content": m["content"]}
-            for m in st.session_state.get("chat_history", [])
-        ]
+    # ── Decide what to run: an explicit retry, or fresh chat input ────────
+    new_prompt = st.chat_input("Ask anything about your documents…")
+    prompt = pending_retry if retry_clicked else new_prompt
+    if not prompt:
+        return
 
-        # ── Stream the answer ─────────────────────────────────────────────
-        sources: List[Dict] = []
-        full_answer = ""
+    st.session_state.pop("retry_prompt", None)  # we're attempting it now
 
-        with st.chat_message("ai"):
-            placeholder = st.empty()
+    # Display user message
+    with st.chat_message("human"):
+        st.markdown(prompt)
 
-            try:
-                for event in api_query_stream(prompt, history_for_api, filename_filter):
-                    etype = event.get("type")
-                    if etype == "sources":
-                        sources = event.get("sources", [])
-                    elif etype == "token":
-                        full_answer += event.get("content", "")
-                        placeholder.markdown(full_answer + "▌")
-                    elif etype == "error":
-                        show_error(event.get("message", "Stream error"))
-                        break
+    # Build API history (role + content only)
+    history_for_api = [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state.get("chat_history", [])
+    ]
 
-                # Final render without cursor
-                placeholder.markdown(full_answer)
-                if sources:
-                    _render_sources(sources)
+    full_answer, sources, interrupted = _stream_answer(prompt, history_for_api, filename_filter)
 
-            except Exception as e:
-                # Fallback to blocking query
-                show_error(f"Streaming unavailable, retrying… ({e})")
-                try:
-                    result = api_query(prompt, history_for_api, filename_filter)
-                    full_answer = result.get("answer", "")
-                    sources = result.get("sources", [])
-                    placeholder.markdown(full_answer)
-                    if sources:
-                        _render_sources(sources)
-                except Exception as e2:
-                    show_error(f"Query failed: {e2}")
-                    return
+    if interrupted:
+        # Don't append a broken turn; stash the prompt and re-render so the
+        # Retry button shows up immediately.
+        st.session_state["retry_prompt"] = prompt
+        st.rerun()
 
-        # ── Append to history ──────────────────────────────────────────────
-        st.session_state["chat_history"].append(
-            {"role": "human", "content": prompt}
-        )
-        st.session_state["chat_history"].append(
-            {"role": "ai", "content": full_answer, "sources": sources}
-        )
+    # ── Append to history (success only) ──────────────────────────────────
+    st.session_state["chat_history"].append(
+        {"role": "human", "content": prompt}
+    )
+    st.session_state["chat_history"].append(
+        {"role": "ai", "content": full_answer, "sources": sources}
+    )
