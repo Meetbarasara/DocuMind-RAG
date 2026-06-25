@@ -71,13 +71,45 @@ class RetrievalManager:
         """
         self._bm25_dirty = True
 
+    def _list_all_documents(self) -> List[Document]:
+        """Enumerate every document in this namespace via index.list()+fetch().
+
+        A1 fix: the BM25 corpus used to be gathered with
+        similarity_search(query="", k=10_000) — a *ranked* vector search
+        (needing a throwaway embedding of an empty string) abused to "list
+        everything". That silently caps at 10k hits and is the exact
+        embed-an-empty-string-to-enumerate anti-pattern BUG-7 already removed
+        from delete_document_by_filename. index.list() is a real paginated
+        listing of every vector ID (no embedding, no 10k ceiling); fetch()
+        returns their stored metadata, and the Document is reconstructed the
+        same way PineconeVectorStore does — page_content lives under
+        _text_key inside the metadata.
+        """
+        index = self.vectorstore.index
+        namespace = self.config.PINECONE_NAMESPACE
+        text_key = getattr(self.vectorstore, "_text_key", "text")
+
+        all_ids: List[str] = []
+        for id_batch in index.list(namespace=namespace):
+            all_ids.extend(id_batch)
+
+        docs: List[Document] = []
+        for start in range(0, len(all_ids), 1000):  # fetch accepts up to 1000 ids/call
+            batch = all_ids[start : start + 1000]
+            response = index.fetch(ids=batch, namespace=namespace)
+            for vector in response.vectors.values():
+                meta = dict(getattr(vector, "metadata", None) or {})
+                if text_key not in meta:
+                    continue
+                docs.append(Document(page_content=meta.pop(text_key), metadata=meta))
+        return docs
+
     def _ensure_bm25_index(self) -> None:
         """Lazily (re)build the BM25 index from everything in Pinecone.
 
-        No-op if the index isn't marked dirty. Fetches the full namespace
-        via the same "dummy query, large k" pattern already used by
-        delete_document_by_filename, since Pinecone doesn't otherwise
-        expose a plain "list everything" call through this client.
+        No-op if the index isn't marked dirty. Enumerates the full namespace
+        via index.list()+fetch() (see _list_all_documents) — a real,
+        paginated listing rather than a ranked search.
         """
         if not self._bm25_dirty:
             return
@@ -85,9 +117,7 @@ class RetrievalManager:
         try:
             from langchain_community.retrievers import BM25Retriever
 
-            all_docs = self.vectorstore.similarity_search(
-                query="", k=10_000, filter=None,
-            )
+            all_docs = self._list_all_documents()
             self._bm25_docs = all_docs
             self._bm25_retriever = (
                 BM25Retriever.from_documents(all_docs, k=self.config.TOP_K)

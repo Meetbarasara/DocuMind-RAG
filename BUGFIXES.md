@@ -1067,3 +1067,40 @@ Re-verified directly: in `generate_stream`, `_verify_citations(full_answer, sour
 
 ### Explain it simply (interview answer)
 Going through this list, four of the nine items were either already fixed by earlier work in this same session, or were already true exactly as the original review itself said (it had already marked a couple of these "done" or "fine" with a checkmark, and I confirmed those checkmarks still hold against the real code rather than just trusting the mark). Two more (multi-query and the re-ranker) already have an on/off switch in the config — the review's literal ask ("make it optional") is already satisfied. What's left for those two is really a product question — "is it worth trading some answer quality for faster responses by default" — not an engineering bug with one obviously correct fix. I documented the tradeoff clearly instead of silently flipping a default that changes how good the app's answers are, the same way I handled a similar judgment call earlier in this file (SEC-3) by writing up the real choice instead of guessing at someone else's priorities.
+
+---
+
+## A1: Hybrid-search BM25 rebuild enumerated the namespace with an empty-string vector search
+
+> From the independent re-audit in `PROJECT_AUDIT_AND_SLIMMING_PLAN.md` (post-CODE_REVIEW.md). New finding IDs use the `A-N` prefix.
+
+### Symptom
+The BM25 keyword index is (re)built lazily on the first hybrid query after any upload or delete. To "list everything in the namespace," `RetrievalManager._ensure_bm25_index` ran a *vector similarity search with an empty query string*: `self.vectorstore.similarity_search(query="", k=10_000, filter=None)`. If that call ever failed, the surrounding `try/except` swallowed the error, set `_bm25_retriever = None`, and hybrid search silently degraded to dense-only with only a single WARNING line to show for it.
+
+### Root Cause
+This is the exact "embed an empty string and abuse a ranked top-k search to enumerate vectors" anti-pattern that **BUG-7** already removed from `delete_document_by_filename` (which switched to `index.list(prefix=...)`). It survived here. Three real defects:
+1. **Silent-degradation design** — the empty-string embedding hits OpenAI on every rebuild; if it ever errors, the `except` turns hybrid off without anyone noticing, and CI can't catch it because the tests mock the vector store (the same blind spot that originally hid BUG-1).
+2. **10k truncation ceiling** — `similarity_search` returns at most `k` ranked results. `k=10_000` is fine for small namespaces, but a namespace that ever exceeds 10k chunks would silently feed BM25 only the 10k "closest" to a meaningless query vector.
+3. **Wasted work** — it pays for a throwaway embedding call and ranks the whole namespace against it, only to discard the ordering.
+
+**Honest correction to the audit.** PROJECT_AUDIT_AND_SLIMMING_PLAN.md flagged this **HIGH — "hybrid search is probably silently dead"**, on the theory that OpenAI rejects empty input. I checked that empirically against the installed stack: `OpenAIEmbeddings(model="text-embedding-3-small").embed_query("")` **returns a normal 1536-dim vector — it does not raise.** So hybrid is *not* dead today for namespaces under 10k chunks. The headline severity was wrong; the underlying defects are real but this is a robustness/consistency fix, not the five-alarm fire first claimed.
+
+### Fix
+Replaced the empty-string search with a real, paginated enumeration mirroring BUG-7. New `_list_all_documents()` helper:
+- `index.list(namespace=...)` — pages through *every* vector ID in the namespace (no embedding, no `k` ceiling).
+- `index.fetch(ids=batch, namespace=...)` in batches of 1000 — returns each vector's stored metadata.
+- Reconstructs each `Document` exactly the way `PineconeVectorStore.similarity_search` does: the chunk text lives in metadata under `_text_key` (default `"text"`), so `page_content = metadata.pop("text")`.
+
+`_ensure_bm25_index` now calls `self._list_all_documents()`; the dirty-flag retry semantics are unchanged.
+
+### Why this approach
+`index.list()` is a listing API, not a search — it can't truncate at `k` and needs no query vector, so it removes the 10k ceiling, the wasted embedding call, and the empty-string dependency all at once. Reusing the same Pinecone primitives BUG-7 already adopted means there's one mental model for "how do we enumerate this namespace," not two.
+
+### Verification
+- **Claim check first:** confirmed `embed_query("")` returns a vector (doesn't raise), which corrected the severity (see Root Cause).
+- **Red:** rewrote `tests/test_bm25_lifecycle.py` so the fake store enumerates via `index.list()`+`fetch()` and its `similarity_search` *raises*. Against the unfixed code: 3 failed, and the captured log shows the real silent fallback firing — `BM25 index rebuild failed, using dense only this query`.
+- **Green:** after the fix, that file → 3 passed (incl. a new test asserting `page_content` is reconstructed and the internal `text` key is stripped from metadata).
+- **Full suite:** `pytest tests/` → **90 passed**. **Lint:** `ruff --select E,F,I` + `pyflakes` on changed files → clean.
+
+### Explain it simply (interview answer)
+To do keyword search I need a list of every document in the user's bucket. The old code got that list in a sneaky way: it asked the vector database "find me the 10,000 documents most similar to *nothing*" — searching with an empty question — and used whatever came back as "the list." That's the wrong tool: a search ranks and caps results, so it could quietly miss documents if there were ever more than 10,000, and it burned a paid call building a ranking it threw away. Worse, if that weird empty search ever errored, the code just shrugged and turned keyword search off without telling anyone. The database has a proper "list everything" button — I switched to that, the same fix we'd already made for deletes. I also tested the scary version of this — "does the empty search crash and silently kill keyword search?" — and found it doesn't actually crash today, so I corrected my own earlier over-statement. It was a real design smell, just not the emergency I first called it.
