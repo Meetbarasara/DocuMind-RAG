@@ -65,6 +65,13 @@ async def lifespan(app: FastAPI):
     logger.info("DocuMind API starting up…")
     pipeline = get_pipeline()
 
+    # O1: surface whether LangSmith tracing is on so it's obvious in the logs
+    # which runs will (or won't) show up in the dashboard.
+    if pipeline.config.LANGSMITH_TRACING:
+        logger.info("LangSmith tracing ENABLED (project=%s)", pipeline.config.LANGSMITH_PROJECT)
+    else:
+        logger.info("LangSmith tracing disabled (set LANGSMITH_TRACING=true + LANGSMITH_API_KEY to enable)")
+
     if pipeline.config.USE_RERANKING:
         # Pick any namespace — the cross-encoder model is shared (singleton)
         # across all RetrievalManagers via the lazy _cross_encoder attribute.

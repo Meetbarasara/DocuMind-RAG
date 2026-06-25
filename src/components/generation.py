@@ -98,7 +98,11 @@ class AnswerGeneration:
             ("system", _RAG_SYSTEM_PROMPT),
             ("user", "{question}"),
         ])
-        self.chain = self.prompt | self.llm | StrOutputParser()
+        # O1: name the chain so LangSmith traces read "rag_generate" instead
+        # of an opaque RunnableSequence. No-op when tracing is disabled.
+        self.chain = (self.prompt | self.llm | StrOutputParser()).with_config(
+            {"run_name": "rag_generate"}
+        )
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -182,7 +186,9 @@ class AnswerGeneration:
                 ("system", _MULTI_QUERY_PROMPT),
                 ("user", "Generate the queries now."),
             ])
-            chain = multi_prompt | self.llm | StrOutputParser()
+            chain = (multi_prompt | self.llm | StrOutputParser()).with_config(
+                {"run_name": "multi_query_gen"}  # O1: readable LangSmith span
+            )
 
             # BUG-3 fix: chain.invoke() blocks the event loop for the full
             # LLM round-trip; ainvoke() awaits it instead, letting other
@@ -303,7 +309,9 @@ class AnswerGeneration:
             ("user", "Follow-up question: {question}\nStandalone query:"),
         ])
 
-        chain = rewrite_prompt | self.llm | StrOutputParser()
+        chain = (rewrite_prompt | self.llm | StrOutputParser()).with_config(
+            {"run_name": "query_rewrite"}  # O1: readable LangSmith span
+        )
         standalone_query = await chain.ainvoke({
             "chat_history": formatted_history,
             "question": query,

@@ -83,6 +83,16 @@ class Config:
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "documind")
     PINECONE_NAMESPACE: str = ""             # must be set per-user at runtime
 
+    # ── Observability: LangSmith (O1) ─────────────────────────────────
+    # LangChain auto-traces every chain (rewrite/multi-query/generate) to
+    # LangSmith when LANGSMITH_TRACING is true and LANGSMITH_API_KEY is set —
+    # langchain-core reads these straight from the environment, and the
+    # load_dotenv() at the top of this module puts any .env values there.
+    # Default OFF so no trace data ever leaves the process unless opted in.
+    LANGSMITH_TRACING: bool = os.getenv("LANGSMITH_TRACING", "false").strip().lower() == "true"
+    LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "documind")
+    LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY")
+
     # ── File handling ─────────────────────────────────────────────────
     # Temp directory for files downloaded from Supabase during processing
     UPLOAD_DIR: str = os.path.join(_PROJECT_ROOT, "tmp_uploads")

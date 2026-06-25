@@ -28,6 +28,9 @@ httpx==0.28.1
 tiktoken==0.12.0
 aiofiles==25.1.0
 
+# Observability
+langsmith==0.7.23              # LangSmith tracing (LangChain-native, env-driven; O1)
+
 # Rate limiting & async file I/O
 slowapi==0.1.9
 
