@@ -1104,3 +1104,30 @@ Replaced the empty-string search with a real, paginated enumeration mirroring BU
 
 ### Explain it simply (interview answer)
 To do keyword search I need a list of every document in the user's bucket. The old code got that list in a sneaky way: it asked the vector database "find me the 10,000 documents most similar to *nothing*" — searching with an empty question — and used whatever came back as "the list." That's the wrong tool: a search ranks and caps results, so it could quietly miss documents if there were ever more than 10,000, and it burned a paid call building a ranking it threw away. Worse, if that weird empty search ever errored, the code just shrugged and turned keyword search off without telling anyone. The database has a proper "list everything" button — I switched to that, the same fix we'd already made for deletes. I also tested the scary version of this — "does the empty search crash and silently kill keyword search?" — and found it doesn't actually crash today, so I corrected my own earlier over-statement. It was a real design smell, just not the emergency I first called it.
+
+---
+
+## A2: requirements.txt pinned the deprecated `pinecone-client` while the code runs on `pinecone`
+
+### Symptom
+`requirements.txt` pinned `pinecone-client==6.0.0`, but the running code (via `langchain-pinecone`) imports and uses `pinecone==7.3.0`. Both distributions were installed in the venv at once — they share the same `pinecone/` import namespace — so a fresh `pip install -r requirements.txt` on a clean machine would pull the *old, deprecated* client alongside the package the code is actually tested against. Classic "works on my machine" / demo-day reproducibility hazard.
+
+### Root Cause
+Pinecone renamed its PyPI distribution from `pinecone-client` to `pinecone`. `langchain-pinecone==0.2.13` depends on `pinecone[asyncio]>=6.0.0,<8.0.0` (the new name), which is why `pinecone 7.3.0` was present and doing the real work. The `pinecone-client==6.0.0` line was a stale leftover pin; inspecting installed metadata, the *only* thing that depended on `pinecone-client` was this project's own requirements. The deprecated dist was pure dead weight occupying the shared namespace. The same stale pin had also been baked into the committed, auto-generated `Documind.egg-info/requires.txt` — a build artifact that shouldn't have been tracked in git at all.
+
+### Fix
+- `requirements.txt`: `pinecone-client==6.0.0` → `pinecone==7.3.0` (explicit pin at the tested version; satisfies langchain-pinecone's `>=6,<8` range).
+- Untracked the generated build metadata: `git rm -r --cached Documind.egg-info/` and added `*.egg-info/` to `.gitignore`, so the stale-pin contradiction can't be re-committed and setuptools regenerates it correctly from `requirements.txt` on each install.
+
+### Why this approach
+Pinning `pinecone==7.3.0` documents exactly the version the suite is green against rather than leaving it to the resolver, and it's inside langchain-pinecone's declared range so a clean install resolves without conflict. Untracking `egg-info` (instead of hand-editing it) fixes the root cause: it's a generated artifact whose source of truth is `requirements.txt` + `setup.py`. Regenerating it by hand produced 100+ lines of line-ending and file-listing churn for one meaningful line — the correct move is to stop tracking it.
+
+### Verification
+- **Compatibility:** `langchain-pinecone 0.2.13` requires `pinecone[asyncio]<8.0.0,>=6.0.0` — `7.3.0` satisfies it (no resolver conflict on a fresh install).
+- **Reverse-deps:** enumerated every installed distribution's `Requires` — the only thing pulling `pinecone-client` was this project's own (now-fixed) pin; removing it fully eliminates the deprecated dist from a clean install.
+- **Parse:** ran `setup.py`'s `get_requirements` logic over the edited file — `pinecone==7.3.0` parses (inline comment stripped), no `pinecone-client` remains, 27 requirements total.
+- **Artifact:** `git check-ignore Documind.egg-info/requires.txt` → ignored; the five egg-info files show as removed-from-index in `git status`.
+- **Regression:** runtime already imports `pinecone 7.3.0`; full suite stays at **90 passed** (packaging-only change, no code path altered).
+
+### Explain it simply (interview answer)
+The library I use to talk to the vector database got renamed — it used to be published as "pinecone-client," now it's just "pinecone." My code already used the new one, but my install recipe still asked for the old, retired one by name, so anyone installing fresh would download both packages stacked on top of each other — a recipe for "it runs for me but breaks for you." I changed the recipe to ask for the new package at the exact version I test against. I also found the old name had snuck into an auto-generated file I'd accidentally committed, so I told git to stop tracking that file — it's the kind of thing the computer rebuilds automatically, so it never belonged in version control.

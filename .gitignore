@@ -27,7 +27,8 @@ venv/
 .DS_Store
 .vscode/
 
-docquery.egg-info/
+# Build artifacts (setuptools regenerates these from setup.py/requirements.txt)
+*.egg-info/
 
 # Vector databases
 vector_db/

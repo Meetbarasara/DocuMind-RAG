@@ -3,7 +3,7 @@ langchain-community==0.4.1    # BM25Retriever for hybrid search (Feature A)
 langchain-text-splitters==1.1.1
 langchain-openai==1.1.12
 langchain-pinecone==0.2.13
-pinecone-client==6.0.0
+pinecone==7.3.0                # A2: replaces deprecated pinecone-client (langchain-pinecone uses the pinecone pkg)
 langchain-experimental==0.4.1
 
 unstructured[all-docs]==0.22.10
