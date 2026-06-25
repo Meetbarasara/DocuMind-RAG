@@ -84,12 +84,15 @@ weakest features) are **removed or default-off** — they add latency and code f
 - Files: `retrieval.py` (delete `_ensure_bm25_index`, `_list_all_documents`, `_hybrid_retrieve`,
   BM25 state), `config.py` (drop `USE_HYBRID_SEARCH`/`HYBRID_SEARCH_WEIGHT` for Option A).
 
-**L2 — Offload reranking to Cohere Rerank API.** *(supersedes B4)*
-- Replace the local `CrossEncoder` (`retrieval._rerank_documents`) with `co.rerank(model=
-  "rerank-v3.5", query=q, documents=[d.page_content...], top_n=RERANKER_TOP_K)`.
-- **Deletes `sentence-transformers` + `torch`** from the runtime — a massive install-size win.
-- Keep the local cross-encoder behind an `if not COHERE_API_KEY` fallback so it still runs offline
-  (one small branch). Files: `retrieval.py`, `config.py`, `requirements.txt`.
+**L2 — Offload reranking to Cohere Rerank API.** ✅ *Done.* *(supersedes B4)*
+- Replaced the local `CrossEncoder` (`retrieval._rerank_documents`) with `cohere.ClientV2.rerank(
+  model="rerank-v3.5", query=q, documents=[d.page_content...], top_n=RERANKER_TOP_K)`.
+- **Removed `sentence-transformers` + `torch`** from requirements (massive install-size win) and
+  deleted the startup cross-encoder warmup — Cohere is hosted, nothing to pre-load.
+- Fallback is a **graceful skip**, not a second model: with no `COHERE_API_KEY`/SDK or on an API
+  error, rerank returns the top `RERANKER_TOP_K` candidates in retrieval order — so tests/offline
+  still work without dragging the heavy deps back in. Files: `retrieval.py`, `config.py`,
+  `main.py`, `requirements.txt`, `.env.example`, tests.
 
 **L3 — Make multi-query optional and OFF by default.**
 - It costs an extra LLM round-trip (~400–800ms) + Nx retrievals for marginal recall once you have
@@ -281,7 +284,7 @@ To keep it interview-explainable (this is as important as what we add):
 
 Do the **simplifying** perf wins early; they delete code and de-risk demos.
 
-1. **L2 — Cohere rerank** (removes `sentence-transformers`+`torch`; big, easy win).
+1. **L2 — Cohere rerank** ✅ *done* (removed `sentence-transformers`+`torch`; graceful skip fallback).
 2. **L3/L4 — multi-query off by default + embed-once** (removes a sequential LLM hop).
 3. **L5 — frontend SSE fallback → retry button** (tiny UX fix).
 4. **C1 — Redis exact-match cache + C3 invalidation** (the latency headline; namespace-safe).

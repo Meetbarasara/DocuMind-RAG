@@ -52,8 +52,8 @@ class RetrievalManager:
         # happens to occur in *this* process — see _ensure_bm25_index.
         self._bm25_dirty = True
 
-        # ── Feature B: Cross-Encoder Re-ranking (lazy-loaded) ────────────
-        self._cross_encoder = None
+        # ── Feature B: Re-ranking via Cohere Rerank API (lazy client) ────
+        self._cohere_client = None
 
     # ── Feature A: BM25 Index Management ──────────────────────────────────
 
@@ -138,69 +138,73 @@ class RetrievalManager:
             logger.warning("BM25 index rebuild failed, using dense only this query: %s", e)
             self._bm25_retriever = None
 
-    # ── Feature B: Cross-Encoder Re-ranking ───────────────────────────────
+    # ── Feature B: Re-ranking via Cohere Rerank API (L2) ──────────────────
 
-    def _get_cross_encoder(self):
-        """Load the cross-encoder model synchronously (call from a thread).
+    def _get_cohere_client(self):
+        """Return a cached Cohere client, or None if reranking can't run.
 
-        This is intentionally synchronous — callers must use
-        ``asyncio.to_thread(_get_cross_encoder)`` or call it from a
-        ``run_in_executor`` context to avoid blocking the event loop.
-        The ~22MB model download/load takes ~1-3s on first call.
+        L2: replaced the local sentence-transformers CrossEncoder (heavy CPU +
+        ~1GB of torch, ran on the app server) with Cohere's hosted Rerank API
+        (~40-100ms, no local model, multi-worker-safe). Returns None when
+        COHERE_API_KEY is unset or the SDK isn't installed, so the caller can
+        degrade gracefully instead of crashing. The client is a thin HTTP
+        wrapper, safe to build once and reuse across the executor threads
+        rerank() runs in.
         """
-        if self._cross_encoder is None:
+        if self._cohere_client is None and self.config.COHERE_API_KEY:
             try:
-                from sentence_transformers import CrossEncoder
+                import cohere
 
-                self._cross_encoder = CrossEncoder(self.config.RERANKER_MODEL)
-                logger.info("Loaded cross-encoder: %s", self.config.RERANKER_MODEL)
-            except ImportError:
-                logger.warning(
-                    "sentence-transformers not installed — re-ranking disabled. "
-                    "Install with: pip install sentence-transformers"
+                self._cohere_client = cohere.ClientV2(api_key=self.config.COHERE_API_KEY)
+                logger.info(
+                    "Initialised Cohere rerank client (model=%s)",
+                    self.config.COHERE_RERANK_MODEL,
                 )
+            except ImportError:
+                logger.warning("cohere not installed — re-ranking disabled. pip install cohere")
                 return None
-        return self._cross_encoder
-
-    async def preload_cross_encoder(self):
-        """Async-safe wrapper to pre-load the cross-encoder at startup.
-
-        Called from the FastAPI lifespan so the first query doesn't pay
-        the model-load cost. Uses asyncio.to_thread to keep the event loop free.
-        """
-        import asyncio
-        await asyncio.to_thread(self._get_cross_encoder)
-        logger.info("Cross-encoder pre-loaded asynchronously.")
-
+        return self._cohere_client
 
     def _rerank_documents(
         self, query: str, docs: List[Document]
     ) -> List[Document]:
-        """Re-rank *docs* by cross-encoder relevance to *query*.
+        """Re-rank *docs* by Cohere relevance to *query*, keeping the top
+        ``config.RERANKER_TOP_K``.
 
-        Returns the top ``config.RERANKER_TOP_K`` documents sorted by score.
-        If the cross-encoder is unavailable, returns *docs* unchanged.
+        Degrades gracefully: if reranking is disabled, there are no docs, or no
+        Cohere client is available (no key/SDK, or an API error), it returns
+        the first ``RERANKER_TOP_K`` docs in their existing retrieval-ranked
+        order rather than failing the whole query.
         """
         if not self.config.USE_RERANKING or not docs:
             return docs
 
-        cross_encoder = self._get_cross_encoder()
-        if cross_encoder is None:
-            return docs
+        top_k = self.config.RERANKER_TOP_K
+        client = self._get_cohere_client()
+        if client is None:
+            logger.debug(
+                "Rerank skipped (no Cohere client); keeping top %d by retrieval order", top_k
+            )
+            return docs[:top_k]
 
-        # Score each (query, document) pair
-        pairs = [(query, doc.page_content) for doc in docs]
-        scores = cross_encoder.predict(pairs)
-
-        # Sort by score descending, keep top-k
-        scored_docs = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
-        top_docs = [doc for doc, _ in scored_docs[: self.config.RERANKER_TOP_K]]
-
-        logger.info(
-            "Re-ranked %d → %d docs (model=%s)",
-            len(docs), len(top_docs), self.config.RERANKER_MODEL,
-        )
-        return top_docs
+        try:
+            response = client.rerank(
+                model=self.config.COHERE_RERANK_MODEL,
+                query=query,
+                documents=[doc.page_content for doc in docs],
+                top_n=top_k,
+            )
+            reranked = [docs[result.index] for result in response.results]
+            logger.info(
+                "Cohere re-ranked %d → %d docs (model=%s)",
+                len(docs), len(reranked), self.config.COHERE_RERANK_MODEL,
+            )
+            return reranked
+        except Exception as e:
+            logger.warning(
+                "Cohere rerank failed, keeping top %d by retrieval order: %s", top_k, e
+            )
+            return docs[:top_k]
 
     # ── Feature E: Chunk Overlap Deduplication ────────────────────────────
 

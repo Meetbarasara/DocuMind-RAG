@@ -51,9 +51,12 @@ class Config:
     USE_HYBRID_SEARCH: bool = True
     HYBRID_SEARCH_WEIGHT: float = 0.5       # 0 = dense only, 1 = BM25 only
 
-    # Feature B: Contextual Compression / Re-ranking
+    # Feature B: Re-ranking via Cohere Rerank API (hosted; L2)
+    # L2: replaced the local sentence-transformers cross-encoder (heavy CPU +
+    # ~1GB torch) with Cohere's hosted Rerank API. Needs COHERE_API_KEY; when
+    # absent, reranking degrades gracefully to retrieval order (see retrieval.py).
     USE_RERANKING: bool = True
-    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    COHERE_RERANK_MODEL: str = "rerank-v3.5"
     RERANKER_TOP_K: int = 3                 # keep top N after re-ranking
 
     # Feature C: Multi-Query Retrieval
@@ -73,6 +76,8 @@ class Config:
 
     # ── API keys & services ───────────────────────────────────────────
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
+    # L2: hosted reranking. Optional — without it, reranking is skipped.
+    COHERE_API_KEY: str = os.getenv("COHERE_API_KEY")
 
     SUPABASE_URL: str = os.getenv("SUPABASE_URL")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")

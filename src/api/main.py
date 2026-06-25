@@ -54,13 +54,11 @@ except ImportError:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: pre-warm the cross-encoder asynchronously so first query is fast.
+    """Startup / shutdown hooks.
 
-    Bug 1 fix: the previous warmup created a throwaway __warmup__ namespace
-    manager that was never reused, so the real user namespace still paid the
-    ~22MB model load on first query. Now we warm the model on the real shared
-    pipeline using preload_cross_encoder() which runs asyncio.to_thread
-    internally — keeping the event loop free during startup.
+    L2: reranking moved to Cohere's hosted Rerank API, so there is no local
+    cross-encoder model to pre-warm anymore — the previous warmup block (and
+    the sentence-transformers/torch dependency it loaded) was removed.
     """
     logger.info("DocuMind API starting up…")
     pipeline = get_pipeline()
@@ -71,13 +69,6 @@ async def lifespan(app: FastAPI):
         logger.info("LangSmith tracing ENABLED (project=%s)", pipeline.config.LANGSMITH_PROJECT)
     else:
         logger.info("LangSmith tracing disabled (set LANGSMITH_TRACING=true + LANGSMITH_API_KEY to enable)")
-
-    if pipeline.config.USE_RERANKING:
-        # Pick any namespace — the cross-encoder model is shared (singleton)
-        # across all RetrievalManagers via the lazy _cross_encoder attribute.
-        warmup_mgr = pipeline._get_retrieval_manager("__warmup__")
-        await warmup_mgr.preload_cross_encoder()
-        logger.info("Cross-encoder pre-loaded asynchronously (event loop was not blocked).")
 
     yield
     logger.info("DocuMind API shutting down.")

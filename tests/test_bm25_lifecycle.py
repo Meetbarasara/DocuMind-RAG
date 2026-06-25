@@ -108,7 +108,7 @@ def make_retrieval_manager(initial_docs):
     rm._bm25_retriever = None
     rm._bm25_docs = []
     rm._bm25_dirty = True
-    rm._cross_encoder = None
+    rm._cohere_client = None
     return rm
 
 

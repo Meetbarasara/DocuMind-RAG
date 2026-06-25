@@ -50,7 +50,7 @@ def _make_retrieval_manager(dense_docs_with_scores, bm25_seed_docs):
     rm = RetrievalManager.__new__(RetrievalManager)
     rm.config = config
     rm.vectorstore = FakeVectorStore(dense_docs_with_scores)
-    rm._cross_encoder = None
+    rm._cohere_client = None
     rm._bm25_dirty = False
     rm._bm25_docs = bm25_seed_docs
     rm._bm25_retriever = BM25Retriever.from_documents(bm25_seed_docs, k=len(bm25_seed_docs))

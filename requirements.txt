@@ -36,6 +36,6 @@ slowapi==0.1.9
 
 # RAG Quality Features
 rank_bm25==0.2.2               # BM25 sparse retrieval for hybrid search (Feature A)
-sentence-transformers==5.6.0   # CrossEncoder re-ranking model (Feature B)
+cohere==7.0.4                  # Hosted Rerank API (Feature B / L2; replaces local cross-encoder + torch)
 
 -e .
