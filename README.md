@@ -21,7 +21,7 @@
 
 ## What is DocuMind?
 
-DocuMind is a production-grade **Retrieval-Augmented Generation (RAG)** platform that lets you upload any document (PDF, DOCX, PPTX, XLSX, CSV, TXT, HTML) and have an intelligent conversation with its contents.
+DocuMind is a production-grade **Retrieval-Augmented Generation (RAG)** platform that lets you upload a document (PDF, DOCX, or TXT) and have an intelligent conversation with its contents.
 
 Every answer is:
 - **Grounded** — only uses information from your uploaded documents
@@ -62,10 +62,10 @@ Every answer is:
 Document Upload
       │
       ▼
- [Ingestion]  ── unstructured ──▶  Parse: text, tables, images
+ [Ingestion]  ── PyMuPDF / python-docx ──▶  Per-page text + extracted images
       │
       ▼
- [Chunking]   ── overlap 500 ──▶  LangChain Documents with metadata
+ [Chunking]   ── 512-token chunks ──▶  LangChain Documents with metadata
       │
       ▼
  [Embedding]  ── text-embedding-3-small ──▶  1536-dim vectors
@@ -94,8 +94,8 @@ User Question
 
 | Feature | Details |
 |---|---|
-| 📄 **Multi-format ingestion** | PDF, DOCX, PPTX, XLSX, CSV, TXT, HTML |
-| 🧩 **Smart chunking** | Semantic chunking via `unstructured` with configurable overlap |
+| 📄 **Document ingestion** | PDF, DOCX, TXT via PyMuPDF + python-docx (images extracted too) |
+| 🧩 **Token-based chunking** | Token-boundary splitting via tiktoken — predictable context size + cost |
 | 🔢 **Vector embeddings** | `text-embedding-3-small` (1536-dim), batched upsert to Pinecone |
 | 🔍 **Similarity retrieval** | Cosine search with score threshold filtering |
 | ✍️ **Query rewriting** | Automatic follow-up resolution using conversation history |
@@ -115,7 +115,7 @@ User Question
 | **LLM** | OpenAI `gpt-4o-mini` |
 | **Embeddings** | OpenAI `text-embedding-3-small` |
 | **Vector DB** | Pinecone (serverless, cosine metric) |
-| **Document parsing** | `unstructured[all-docs]` |
+| **Document parsing** | PyMuPDF (PDF) + python-docx (DOCX) |
 | **RAG framework** | LangChain + `langchain-pinecone` |
 | **Backend API** | FastAPI + Uvicorn |
 | **Frontend** | Streamlit |
@@ -325,12 +325,12 @@ All settings live in `src/components/config.py` and are overridable via `.env`:
 |---|---|---|
 | `EMBEDDING_MODEL_NAME` | `text-embedding-3-small` | OpenAI embedding model |
 | `LLM_MODEL_NAME` | `gpt-4o-mini` | OpenAI chat model |
-| `CHUNK_SIZE` | `3000` | Max chars per chunk |
-| `CHUNK_OVERLAP` | `500` | Overlap between chunks |
+| `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
+| `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
 | `TOP_K` | `5` | Chunks retrieved per query |
-| `SIMILARITY_THRESHOLD` | `0.30` | Min cosine score to keep |
+| `SIMILARITY_THRESHOLD` | `0.50` | Min cosine score to keep |
 | `LLM_TEMPERATURE` | `0.1` | LLM creativity (lower = more factual) |
-| `PDF_PARSE_STRATEGY` | `fast` | `fast` (~5s, text only) or `hi_res` (~2-3 min, tables + images) |
+| `RERANKER_TOP_K` | `3` | Chunks kept after Cohere rerank |
 | `EMBEDDING_BATCH_SIZE` | `100` | Vectors per Pinecone upsert batch |
 | `API_PORT` | `8000` | FastAPI server port |
 
@@ -341,7 +341,7 @@ All settings live in `src/components/config.py` and are overridable via `.env`:
 ### Ingestion
 
 1. File is uploaded via API → saved to Supabase Storage
-2. `unstructured` parses the document into elements (text, tables, images)
+2. PyMuPDF (PDF) / python-docx (DOCX) extracts per-page text + embedded images
 3. Elements are chunked with semantic boundaries and overlap
 4. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
 5. SHA-256 deduplication removes identical chunks

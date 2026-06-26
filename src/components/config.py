@@ -19,11 +19,11 @@ class Config:
     EMBEDDING_MODEL_NAME: str = "text-embedding-3-small"
     LLM_MODEL_NAME: str = "gpt-4o-mini"
 
-    # ── Chunking parameters ───────────────────────────────────────────
-    CHUNK_SIZE: int = 3000
-    NEW_AFTER_N_CHARS: int = 2400
-    COMBINE_TEXT_UNDER_N_CHARS: int = 500
-    CHUNK_OVERLAP: int = 500
+    # ── Chunking parameters (Q1: token-based, not character-based) ─────
+    # LLMs read tokens, not characters, so we split on token boundaries for
+    # predictable context size and cost (~512 tokens, 64 overlap).
+    CHUNK_SIZE_TOKENS: int = 512
+    CHUNK_OVERLAP_TOKENS: int = 64
 
     # ── Retrieval parameters ──────────────────────────────────────────
     TOP_K: int = 5
@@ -37,11 +37,6 @@ class Config:
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 2048
     STREAMING: bool = True
-
-    # ── PDF parsing strategy ──────────────────────────────────────────
-    # "fast"   = pdfminer text extraction (~2-5s per PDF, text-only)
-    # "hi_res" = ML layout detection (~120-200s on CPU, extracts tables+images)
-    PDF_PARSE_STRATEGY: str = os.getenv("PDF_PARSE_STRATEGY", "fast")
 
     # ── Embedding parameters ──────────────────────────────────────────
     EMBEDDING_BATCH_SIZE: int = 100
@@ -112,9 +107,9 @@ class Config:
     # ── File handling ─────────────────────────────────────────────────
     # Temp directory for files downloaded from Supabase during processing
     UPLOAD_DIR: str = os.path.join(_PROJECT_ROOT, "tmp_uploads")
-    SUPPORTED_FILE_TYPES: tuple = (
-        "pdf", "docx", "pptx", "txt", "xlsx", "csv", "html",
-    )
+    # B1/B2: lightweight parsers (PyMuPDF + python-docx) cover these three;
+    # images inside PDFs/DOCX are extracted for the multimodal step.
+    SUPPORTED_FILE_TYPES: tuple = ("pdf", "docx", "txt")
     # SEC-6: cap upload size so a single request can't exhaust memory/CPU.
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50MB
 

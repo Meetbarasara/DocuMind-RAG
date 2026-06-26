@@ -115,9 +115,13 @@ appended to history. Files: `chat.py`.
 
 ### Pillar Q — QUALITY
 
-**Q1 — Token-based chunking.** Switch to `RecursiveCharacterTextSplitter.from_tiktoken_encoder
-(chunk_size=512, chunk_overlap=64)`. Predictable context size, cleaner boundaries, predictable
-cost. Folds into dropping `unstructured[all-docs]` (slimming B2). Files: `ingestion.py`, `config.py`.
+**Q1 — Token-based chunking.** ✅ *Done (with B2).* `RecursiveCharacterTextSplitter.from_tiktoken_encoder`
+(512 tokens / 64 overlap) — predictable context size + cost. Landed together with **B2**: ingestion
+rewritten off `unstructured[all-docs]` to **PyMuPDF (PDF text + image extraction)** + **python-docx**
++ txt; formats reduced to PDF/DOCX/TXT (B1); embedded **images are extracted** into the parsed
+output (deferred to the image-answering step, not yet indexed). Dropped `unstructured[all-docs]`,
+`unstructured-client`, `pdf2image`, `pypdf`, `python-pptx`, `openpyxl` — a big install-size win.
+Files: `ingestion.py` (rewrite), `config.py`, `utils.py` (removed element helpers), tests, README.
 
 **Q2 — Retrieval = recall × precision.** Dense (or hybrid) gives recall; Cohere rerank gives
 precision. This two-stage shape is the single most important quality decision and it's easy to
@@ -304,7 +308,7 @@ Do the **simplifying** perf wins early; they delete code and de-risk demos.
 3. **L5 — frontend SSE fallback → retry button** ✅ *done* (no silent expensive re-query).
 4. **C1 — Redis exact-match cache + C3 invalidation** ✅ *done* (the latency headline; namespace-safe, fail-open). *(L4 absorbed.)*
 5. **O1–O3 — LangSmith tracing + per-stage timings** (now you can *measure* steps 1–4).
-6. **Q1 — token-based chunking** (folds into dropping `unstructured`, slimming B2).
+6. **Q1 — token-based chunking + B2 drop-unstructured (PyMuPDF/python-docx)** ✅ *done* (+ images now extracted, deferred to the multimodal step).
 7. **L1 — retrieval design:** ship **Option A (dense + rerank)** first; revisit Option B (Pinecone
    native hybrid) only if eval shows lexical misses.
 8. **E1/E2 — offline eval harness + CI gate**; then **O4/E3 — feedback loop + online eval**.

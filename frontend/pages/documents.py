@@ -12,7 +12,7 @@ from frontend.utils import (
     show_success,
 )
 
-SUPPORTED_TYPES = ["pdf", "docx", "pptx", "txt", "xlsx", "csv", "html"]
+SUPPORTED_TYPES = ["pdf", "docx", "txt"]
 
 
 def render_documents_page() -> None:

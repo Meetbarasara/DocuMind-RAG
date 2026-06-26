@@ -1,78 +1,10 @@
 import hashlib
-from collections import Counter
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from src.logger import get_logger
 
 logger = get_logger(__name__)
-
-# ── Element Introspection Helpers ──────────────────────────────────────────
-
-
-def _get_element_type(el) -> str:
-    """Return the element's category/type as a string."""
-    for attr in ("category", "type"):
-        value = getattr(el, attr, None)
-        if value:
-            return str(value)
-    return type(el).__name__
-
-
-def _get_page_number(el) -> Optional[int]:
-    """Extract page_number from an element's metadata, if present.
-
-    BUG-11 fix: chunk_by_title's composite chunks usually already carry
-    over the first original element's page_number when merging across
-    pages — but as a defensive fallback (this isn't something this app
-    controls, and library behavior can differ), if the element's own
-    page_number is missing, fall back to the first original element
-    (preserved via metadata.orig_elements) that has one.
-    """
-    meta = getattr(el, "metadata", None)
-    if not meta:
-        return None
-
-    page = getattr(meta, "page_number", None)
-    if page is not None:
-        return page
-
-    for orig in getattr(meta, "orig_elements", None) or []:
-        orig_page = getattr(getattr(orig, "metadata", None), "page_number", None)
-        if orig_page is not None:
-            return orig_page
-
-    return None
-
-
-def _element_has_image_payload(el) -> bool:
-    """Check if the element carries an image (base64 or file path)."""
-    meta = getattr(el, "metadata", None)
-    if not meta:
-        return False
-    return bool(getattr(meta, "image_base64", None) or getattr(meta, "image_path", None))
-
-
-def _table_html(el) -> Optional[str]:
-    """Return the HTML representation of a table element, if available."""
-    meta = getattr(el, "metadata", None)
-    return getattr(meta, "text_as_html", None) if meta else None
-
-
-def _get_metadata_fields(el, fields: list) -> dict:
-    """Safely extract multiple metadata attributes into a dict.
-
-    Args:
-        el: An unstructured element with an optional `.metadata` object.
-        fields: List of attribute names to extract.
-
-    Returns:
-        Dict mapping each field name to its value (or None if absent).
-    """
-    meta = getattr(el, "metadata", None)
-    if not meta:
-        return {f: None for f in fields}
-    return {f: getattr(meta, f, None) for f in fields}
 
 
 # ── Filename Safety ───────────────────────────────────────────────────────
@@ -95,45 +27,6 @@ def sanitize_filename(filename: str) -> str:
     if not name or name in (".", ".."):
         raise ValueError(f"Invalid filename: {filename!r}")
     return name
-
-
-# ── Logging / Analysis ────────────────────────────────────────────────────
-
-
-def _log_elements_analysis(elements: List) -> None:
-    """Log a frequency breakdown of element types (SEC-8: was print())."""
-    counts = Counter(_get_element_type(el) for el in elements)
-    logger.debug("Element breakdown: %s", dict(counts))
-
-
-# ── Content Description Builders ──────────────────────────────────────────
-
-
-def _create_table_description(el) -> str:
-    """Build a short text summary of a table element."""
-    try:
-        table_text = el.text or ""
-        preview_lines = table_text.split("\n")[:5]
-        summary = " ".join(line.strip() for line in preview_lines if line.strip())
-        return f"Table containing: {summary[:200]}..."
-    except Exception:
-        return "Table data extracted from document."
-
-
-def _create_image_description(el, page_num=None) -> str:
-    """Build a text description for an image element."""
-    try:
-        meta = getattr(el, "metadata", None)
-        alt_text = getattr(meta, "alt_text", None) if meta else None
-        caption = getattr(meta, "caption", None) if meta else None
-
-        if alt_text or caption:
-            return alt_text or caption
-
-        page_info = f" on page {page_num}" if page_num else ""
-        return f"Image content{page_info}. Contains visual information related to document content."
-    except Exception:
-        return "Image content extracted from document."
 
 
 # ══════════════════════════════════════════════════════════════════════════════
