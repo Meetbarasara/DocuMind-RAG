@@ -185,10 +185,16 @@ Free labeled data that feeds Pillar E.
 
 ### Pillar E — EVALUATION  *(your next big focus — set it up to be easy)*
 
-**E1 — Offline harness (move RAGAS out of the live API — slimming B5).** `scripts/run_eval.py` +
-a versioned `data/eval/goldset.v1.jsonl` (~50 Q/A with labeled relevant chunk ids). Compute:
-- **Retrieval:** Recall@k, MRR, nDCG (via `ranx` or ~30 lines of Python) from the labeled chunk ids.
-- **Generation:** RAGAS faithfulness, answer_relevancy, context_precision/recall (keep RAGAS).
+**E1 — Offline harness.** ✅ *Done (first cut).* `scripts/run_eval.py` + a versioned
+`data/eval/goldset.v1.jsonl` (curated from the sample PDF: 8 answerable + 1 unanswerable). Computes:
+- **Retrieval:** Hit@k / Recall@k / MRR — **page-level** (labeled `relevant_pages`, robust to
+  re-chunking — no fragile chunk-id labels), ~20 lines of pure Python in `evalution.py`.
+- **Generation:** RAGAS faithfulness / answer_relevancy / context_precision/recall.
+- **Unanswerable:** refusal rate on negative rows.
+Saves a baseline JSON for run-to-run comparison. The metric functions + gold-set loader are
+unit-tested (`test_eval_metrics.py`); the full run needs real keys so it's run on demand.
+*Not yet:* expand the gold set, and **B5's removal of the live `/api/evaluate/*` routes** (the
+offline harness supersedes them).
 
 **E2 — CI regression gate.** Run a small slice on each PR (nightly for the full, costly set); fail
 the build if a metric drops past a threshold vs the stored baseline. Now "I turned rerank on" comes
@@ -311,7 +317,7 @@ Do the **simplifying** perf wins early; they delete code and de-risk demos.
 6. **Q1 — token-based chunking + B2 drop-unstructured (PyMuPDF/python-docx)** ✅ *done* (+ images now extracted, deferred to the multimodal step).
 7. **L1 — retrieval design:** ship **Option A (dense + rerank)** first; revisit Option B (Pinecone
    native hybrid) only if eval shows lexical misses.
-8. **E1/E2 — offline eval harness + CI gate**; then **O4/E3 — feedback loop + online eval**.
+8. **E1 — offline eval harness** ✅ *done (first cut)*; then **E2 CI gate**, **O4/E3 — feedback loop + online eval**.
 9. **C2 — semantic cache** (stretch, once exact-match + observability prove the win).
 
 After step 5 you can *prove* each later change with LangSmith + eval numbers — which is exactly the

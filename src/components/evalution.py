@@ -194,3 +194,48 @@ class EvaluationManager:
         except Exception as e:
             logger.error("evaluate_batch failed: %s", e)
             return {"error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Retrieval metrics (page-level, label-light) + gold-set loader (Pillar E)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Page-level (not chunk-id) relevance keeps the gold set robust to re-chunking:
+# a row labels which page(s) answer the question, and we check whether the
+# retriever surfaced a chunk from one of those pages.
+
+
+def hit_at_k(retrieved_pages: List, relevant_pages: List, k: int) -> float:
+    """1.0 if any of the top-k retrieved pages is relevant, else 0.0."""
+    rel = set(relevant_pages)
+    return 1.0 if rel and (set(retrieved_pages[:k]) & rel) else 0.0
+
+
+def recall_at_k(retrieved_pages: List, relevant_pages: List, k: int) -> float:
+    """Fraction of the relevant pages that appear in the top-k retrieved."""
+    rel = set(relevant_pages)
+    if not rel:
+        return 0.0
+    return len(set(retrieved_pages[:k]) & rel) / len(rel)
+
+
+def mrr(retrieved_pages: List, relevant_pages: List) -> float:
+    """Reciprocal rank of the first relevant page (0.0 if none retrieved)."""
+    rel = set(relevant_pages)
+    for rank, page in enumerate(retrieved_pages, start=1):
+        if page in rel:
+            return 1.0 / rank
+    return 0.0
+
+
+def load_goldset(path: str) -> List[Dict]:
+    """Load a JSONL gold set (one JSON object per line) into a list of dicts."""
+    import json
+
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows

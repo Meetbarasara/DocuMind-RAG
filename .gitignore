@@ -30,6 +30,9 @@ venv/
 # Build artifacts (setuptools regenerates these from setup.py/requirements.txt)
 *.egg-info/
 
+# Generated eval baseline (run scripts/run_eval.py; commit a curated one for CI gates)
+data/eval/baseline.json
+
 # Vector databases
 vector_db/
 chroma/
