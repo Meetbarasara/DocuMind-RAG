@@ -9,7 +9,16 @@ Endpoints:
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
 from src.api.dependencies import get_current_user, get_db, get_pipeline
 from src.api.error_utils import log_and_get_ref
@@ -253,3 +262,24 @@ async def delete_document(
         )
 
     return {"message": f"'{filename}' deleted successfully"}
+
+
+@router.get("/page-image/{filename}/{page}")
+async def get_page_image(
+    filename: str,
+    page: int,
+    current_user: dict = Depends(get_current_user),
+    db: SupabaseManager = Depends(get_db),
+):
+    """Return the rendered snapshot of a document page (B-hybrid) — the chat UI
+    uses it to show the actual page a multimodal answer read from."""
+    user_id = str(current_user["user"].id)
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename")
+
+    data = await asyncio.to_thread(db.download_page_image, user_id, filename, page)
+    if not data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Page image not found")
+    return Response(content=data, media_type="image/png")

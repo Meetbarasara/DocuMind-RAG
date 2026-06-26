@@ -143,6 +143,7 @@ class AnswerGeneration:
                 "page": meta.get("page_number") or "N/A",
                 "chunk_type": meta.get("chunk_type"),
                 "chunk_id": meta.get("chunk_id"),
+                "has_visual": bool(meta.get("has_visual")),  # B-hybrid: a page snapshot exists
             })
 
         context = "\n---\n".join(context_parts)

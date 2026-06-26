@@ -6,6 +6,7 @@ import streamlit as st
 
 from frontend.utils import (
     api_list_documents,
+    api_page_image,
     api_query_stream,
     format_file_size,
 )
@@ -25,11 +26,17 @@ def _render_sources(sources: List[Dict]) -> None:
             page = s.get("page") or "N/A"
             ctype = s.get("chunk_type") or "text"
             snippet = s.get("content", "")
+            badge = " · 🖼️ page snapshot" if s.get("has_visual") else ""
             st.markdown(
-                f"**[{s.get('source_id', '?')}]** `{fname}` — Page {page} ({ctype})"
+                f"**[{s.get('source_id', '?')}]** `{fname}` — Page {page} ({ctype}){badge}"
             )
             if snippet:
                 st.caption(f"> {snippet[:300]}…" if len(snippet) > 300 else f"> {snippet}")
+            # B-hybrid: show the actual rendered page the multimodal answer read from.
+            if s.get("has_visual"):
+                img = api_page_image(fname, page)
+                if img:
+                    st.image(img, caption=f"📄 {fname} — page {page}", use_container_width=True)
             st.divider()
 
 

@@ -124,6 +124,21 @@ def api_delete_document(filename: str) -> Dict:
     return resp.json()
 
 
+def api_page_image(filename: str, page) -> Optional[bytes]:
+    """Fetch a rendered page snapshot (B-hybrid), or None if there isn't one."""
+    try:
+        resp = httpx.get(
+            f"{API_BASE}/api/documents/page-image/{filename}/{page}",
+            headers=auth_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            return resp.content
+    except Exception:
+        pass
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  Chat API
 # ──────────────────────────────────────────────────────────────────────────────
