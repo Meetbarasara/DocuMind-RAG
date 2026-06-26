@@ -73,16 +73,20 @@ weakest features) are **removed or default-off** — they add latency and code f
 
 ### Pillar L — LATENCY  (target: time-to-first-token ~500–800ms on a miss, <50ms on a cache hit)
 
-**L1 — Remove local BM25; pick one retrieval design.** *(supersedes A1/A4, slimming C-3)*
-- **Option A (recommended, simplest):** **Dense retrieval + Cohere rerank.** Delete BM25/hybrid
-  entirely. A strong reranker recovers most of what hybrid buys. Fewer moving parts, nothing to
-  rebuild, multi-worker-safe. Interview line: *"broad dense recall, then a cross-encoder reranker
-  for precision."*
-- **Option B (stretch):** **Pinecone native hybrid** (dotproduct index + sparse vectors via
-  `pinecone-text`). Better on exact keywords/acronyms. Cost: you learn sparse encoders and encode
-  a sparse vector at ingest + query. Still simpler than today's in-RAM rebuild.
-- Files: `retrieval.py` (delete `_ensure_bm25_index`, `_list_all_documents`, `_hybrid_retrieve`,
-  BM25 state), `config.py` (drop `USE_HYBRID_SEARCH`/`HYBRID_SEARCH_WEIGHT` for Option A).
+**L1 — Replace local BM25 with Pinecone native hybrid.** ✅ *Done (Option B, by user choice).*
+*(supersedes A1/A4, resolves A8)*
+- Removed the in-process BM25 (`_ensure_bm25_index`/`_list_all_documents`/`_hybrid_retrieve`/BM25
+  state + `langchain-community`/`rank_bm25` deps) and moved hybrid **server-side**: each chunk now
+  carries a **dense + sparse** vector in one Pinecone index, fused by `index.query`. No per-process
+  RAM index, no full-namespace rebuild, multi-worker/restart safe — the A4/A8 problems are gone.
+- Sparse encoder is hand-rolled (`src/components/sparse.py`, stdlib only) because `pinecone-text`'s
+  `mmh3` has no py3.13 wheel here; stateless tokenize→stopword→hash→sublinear-TF, plus convex
+  alpha weighting (`HYBRID_ALPHA`). Same encoder at ingest + query.
+- **Gated `USE_HYBRID_SEARCH` (default OFF, env-driven)** + a dense fallback, because native hybrid
+  needs a **dotproduct index** (cosine rejects sparse). To use it: create a dotproduct index,
+  `USE_HYBRID_SEARCH=true`, re-ingest. Unit-tested (encoder + query build + fallback); the live
+  hybrid needs that new index. Files: `retrieval.py`, `embeddings.py` (`_upsert_hybrid`), `sparse.py`,
+  `config.py`, `pipeline.py`, tests.
 
 **L2 — Offload reranking to Cohere Rerank API.** ✅ *Done.* *(supersedes B4)*
 - Replaced the local `CrossEncoder` (`retrieval._rerank_documents`) with `cohere.ClientV2.rerank(
@@ -315,7 +319,7 @@ Do the **simplifying** perf wins early; they delete code and de-risk demos.
 4. **C1 — Redis exact-match cache + C3 invalidation** ✅ *done* (the latency headline; namespace-safe, fail-open). *(L4 absorbed.)*
 5. **O1–O3 — LangSmith tracing + per-stage timings** (now you can *measure* steps 1–4).
 6. **Q1 — token-based chunking + B2 drop-unstructured (PyMuPDF/python-docx)** ✅ *done* (+ images now extracted, deferred to the multimodal step).
-7. **L1 — retrieval design:** ship **Option A (dense + rerank)** first; revisit Option B (Pinecone
+7. **L1 — retrieval design:** ✅ *done* — shipped **Option B (Pinecone native hybrid)**, gated off until a dotproduct index exists. *(was: revisit Option B (Pinecone
    native hybrid) only if eval shows lexical misses.
 8. **E1 — offline eval harness** ✅ *done (first cut)*; then **E2 CI gate**, **O4/E3 — feedback loop + online eval**.
 9. **C2 — semantic cache** (stretch, once exact-match + observability prove the win).

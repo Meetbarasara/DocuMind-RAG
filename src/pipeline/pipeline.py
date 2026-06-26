@@ -152,18 +152,8 @@ class RAGPipeline:
                 "Upserted %d chunks to Pinecone (namespace=%s)", len(docs), effective_namespace
             )
 
-            # ── Step 3: Invalidate BM25 index for hybrid search ──────────
-            # BUG-4/5 fix: this used to call update_bm25_index(docs), which
-            # *replaced* the index with only this upload's chunks — a
-            # second upload silently dropped the first file's keyword
-            # coverage, and the index was empty after a restart or on a
-            # different worker. Invalidating instead means the next query
-            # rebuilds the full index straight from Pinecone (every chunk
-            # in the namespace, not just whatever this process happened to
-            # upload).
-            if self.config.USE_HYBRID_SEARCH:
-                retrieval_manager = self._get_retrieval_manager(effective_namespace)
-                retrieval_manager.invalidate_bm25_index()
+            # L1: native hybrid stores sparse vectors in Pinecone alongside the
+            # dense ones, so there's no in-process index to invalidate on upload.
 
             # C3: this namespace's documents changed — drop its cached answers
             # so the next query can't be served a stale one.
@@ -468,11 +458,6 @@ class RAGPipeline:
         try:
             retrieval_manager = self._get_retrieval_manager(namespace)
             retrieval_manager.delete_document_by_filename(filename)
-            # BUG-4/5 fix: the BM25 index is a cached view of "everything
-            # in Pinecone right now" — invalidate it so deleted chunks
-            # don't linger in keyword search results until some later
-            # upload happens to trigger a rebuild.
-            retrieval_manager.invalidate_bm25_index()
             # C3: drop this namespace's cached answers — a deleted doc must not
             # keep answering from cache.
             self.cache.invalidate(namespace)

@@ -42,9 +42,12 @@ class Config:
     EMBEDDING_BATCH_SIZE: int = 100
 
     # ── RAG Quality Feature Flags ─────────────────────────────────────
-    # Feature A: Hybrid Search — combine BM25 keyword + dense vector search
-    USE_HYBRID_SEARCH: bool = True
-    HYBRID_SEARCH_WEIGHT: float = 0.5       # 0 = dense only, 1 = BM25 only
+    # Feature A: Pinecone *native* hybrid (dense + sparse, fused server-side; L1).
+    # Default OFF — it needs a dotproduct index (cosine indexes reject sparse
+    # vectors). Set USE_HYBRID_SEARCH=true once you've created a dotproduct index
+    # and re-ingested. HYBRID_ALPHA weights dense vs sparse (1.0 = dense only).
+    USE_HYBRID_SEARCH: bool = os.getenv("USE_HYBRID_SEARCH", "false").strip().lower() == "true"
+    HYBRID_ALPHA: float = float(os.getenv("HYBRID_ALPHA", "0.5"))
 
     # Feature B: Re-ranking via Cohere Rerank API (hosted; L2)
     # L2: replaced the local sentence-transformers cross-encoder (heavy CPU +

@@ -152,7 +152,12 @@ class EmbeddingManager:
             )
 
             chunk_ids = [doc.metadata["chunk_id"] for doc in documents]
-            vector_store.add_documents(documents=documents, ids=chunk_ids)
+            if self.config.USE_HYBRID_SEARCH:
+                # L1: native hybrid — store a dense + sparse vector per chunk so
+                # Pinecone fuses them server-side (requires a dotproduct index).
+                self._upsert_hybrid(documents, chunk_ids, vector_store, effective_namespace)
+            else:
+                vector_store.add_documents(documents=documents, ids=chunk_ids)
 
             logger.info("Upserted %d documents to Pinecone.", len(documents))
             return vector_store
@@ -163,6 +168,34 @@ class EmbeddingManager:
                 len(documents),
             )
             raise
+
+    def _upsert_hybrid(self, documents, chunk_ids, vector_store, namespace) -> None:
+        """L1: upsert a dense + sparse vector per chunk for Pinecone native hybrid.
+
+        Needs a dotproduct index. The sparse vector is the stateless lexical
+        encoding from src/components/sparse.py; the dense vector is the same
+        OpenAI embedding used everywhere else. page_content is stored under the
+        vectorstore's text key so retrieval reconstructs Documents the same way.
+        """
+        from src.components.sparse import encode_text
+
+        text_key = getattr(vector_store, "_text_key", "text")
+        dense_vectors = self._embedding_model.embed_documents([d.page_content for d in documents])
+
+        vectors = []
+        for doc, vid, dense in zip(documents, chunk_ids, dense_vectors):
+            meta = dict(doc.metadata)
+            meta[text_key] = doc.page_content
+            vector = {"id": vid, "values": dense, "metadata": meta}
+            sparse = encode_text(doc.page_content)
+            if sparse["indices"]:
+                vector["sparse_values"] = sparse
+            vectors.append(vector)
+
+        index = vector_store.index
+        batch = self.config.EMBEDDING_BATCH_SIZE
+        for start in range(0, len(vectors), batch):
+            index.upsert(vectors=vectors[start : start + batch], namespace=namespace)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
