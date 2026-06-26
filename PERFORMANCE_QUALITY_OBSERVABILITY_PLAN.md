@@ -181,11 +181,15 @@ retrieve, rerank) plus `cache_hit`/`namespace` tags — deferred on purpose so w
 **O2 — Dashboards for free.** LangSmith then gives p50/p95/p99 latency, cost/query, error rate, and
 (via O1's tag) **cache-hit rate** — the metrics that matter, without building Grafana.
 
-**O3 — Keep the cheap stuff you have.** The request-id + total-latency middleware stays; add
-per-stage timing logs at INFO as a fallback/complement to LangSmith.
+**O3 — Per-stage timing + custom retrieve span.** ✅ *Done.* The request-id + total-latency
+middleware stays; `pipeline.query` now logs `retrieve=…ms generate=…ms` at INFO, and the
+non-LangChain retrieval stage is a `@traceable(run_type="retriever")` span so LangSmith shows it
+alongside the auto-traced `query_rewrite`/`multi_query_gen`/`rag_generate` — each span carries its
+own latency, so per-stage timing is visible in the dashboard too. No-op when tracing is off.
 
-**O4 — Feedback loop.** Add 👍/👎 in the Streamlit chat → send the score to the LangSmith trace.
-Free labeled data that feeds Pillar E.
+**O4 — Feedback loop.** ⏸️ *Deferred.* Needs the LangSmith trace `run_id` plumbed back through the
+SSE stream to the frontend so a 👍/👎 can attach to the right run — more wiring than it looks. The
+👍/👎 UI itself is cheap; the run-id threading is the work.
 
 ### Pillar E — EVALUATION  *(your next big focus — set it up to be easy)*
 

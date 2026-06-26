@@ -13,9 +13,12 @@ Public API:
 import asyncio
 import hashlib
 import os
+import time
 import uuid
 from collections import OrderedDict
 from typing import Dict, List, Optional
+
+from langsmith import traceable
 
 from src.components.cache import QueryCache
 from src.components.config import Config
@@ -219,6 +222,7 @@ class RAGPipeline:
     #  Multi-Query Retrieval Helper (Feature C)
     # ─────────────────────────────────────────────────────────────────────────
 
+    @traceable(run_type="retriever", name="retrieve")
     async def _multi_query_retrieve_async(
         self,
         rewritten_query: str,
@@ -308,7 +312,9 @@ class RAGPipeline:
 
         # Step 2: Multi-query parallel Pinecone lookups
         retrieval_manager = self._get_retrieval_manager(namespace)
+        _t_retrieve = time.perf_counter()
         docs = await self._multi_query_retrieve_async(rewritten, retrieval_manager, filename_filter)
+        _retrieve_ms = (time.perf_counter() - _t_retrieve) * 1000
 
         if not docs:
             return {
@@ -321,9 +327,11 @@ class RAGPipeline:
         page_images = self._gather_page_images(docs, namespace)
 
         # Step 3: Generate answer (awaited — async since memory summarization is async)
+        _t_gen = time.perf_counter()
         result = await self.generation_manager.generate(
             rewritten, docs, chat_history, page_images=page_images
         )
+        _gen_ms = (time.perf_counter() - _t_gen) * 1000
         result["rewritten_query"] = rewritten
         result["namespace"] = namespace
 
@@ -340,8 +348,8 @@ class RAGPipeline:
                 self.cache.add_semantic(namespace, query_vec, value, filename_filter)
 
         logger.info(
-            "Query answered with %d sources (namespace=%s)",
-            result["num_sources_used"], namespace,
+            "Query answered with %d sources (ns=%s) | O3 timing: retrieve=%.0fms generate=%.0fms",
+            result["num_sources_used"], namespace, _retrieve_ms, _gen_ms,
         )
         return result
     
