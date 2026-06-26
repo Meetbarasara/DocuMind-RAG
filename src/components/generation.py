@@ -364,6 +364,7 @@ class AnswerGeneration:
         query: str,
         retrieved_docs: List[Document],
         chat_history: list = None,
+        capture: dict = None,
     ):
         """Yield Server-Sent Events (SSE) for real-time streaming responses.
 
@@ -411,9 +412,18 @@ class AnswerGeneration:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"
 
         # 3. Citation verification (Feature D) — runs AFTER streaming, before [DONE]
+        verification = None
         if self.config.USE_CITATION_VERIFICATION and full_answer:
             verification = self._verify_citations(full_answer, sources)
             yield f"data: {json.dumps({'type': 'citation_verification', **verification})}\n\n"
+
+        # C1: hand the finished answer back to the caller (pipeline.query_stream)
+        # via a side channel so it can be cached without re-parsing this SSE.
+        if capture is not None and full_answer:
+            capture["answer"] = full_answer
+            capture["sources"] = sources
+            if verification is not None:
+                capture["citation_verification"] = verification
 
         # 4. Always signal end-of-stream so the client never hangs
         yield "data: [DONE]\n\n"

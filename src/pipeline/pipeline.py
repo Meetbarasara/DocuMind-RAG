@@ -17,6 +17,7 @@ import uuid
 from collections import OrderedDict
 from typing import Dict, List, Optional
 
+from src.components.cache import QueryCache
 from src.components.config import Config
 from src.components.embeddings import EmbeddingManager
 from src.components.generation import AnswerGeneration
@@ -42,6 +43,9 @@ class RAGPipeline:
         self.processor = DocumentProcessor(self.config)
         self.embedding_manager = EmbeddingManager(self.config)
         self.generation_manager = AnswerGeneration(self.config)
+        # C1: exact-match query cache (Redis). Fail-open and disabled until
+        # REDIS_URL is set, so it's a no-op by default.
+        self.cache = QueryCache(self.config)
 
         # RetrievalManager is created lazily (namespace can change per
         # request). Latency Optimization #6 fix: this used to be a plain
@@ -158,6 +162,10 @@ class RAGPipeline:
                 retrieval_manager = self._get_retrieval_manager(effective_namespace)
                 retrieval_manager.invalidate_bm25_index()
 
+            # C3: this namespace's documents changed — drop its cached answers
+            # so the next query can't be served a stale one.
+            self.cache.invalidate(effective_namespace)
+
             return len(docs)
 
         except CustomException:
@@ -232,6 +240,17 @@ class RAGPipeline:
         """
         chat_history = chat_history or []
 
+        # C1: serve repeats straight from Redis. Only when there's no chat
+        # history — with history the same question text can mean different
+        # things, so the raw question isn't a safe exact-match key.
+        use_cache = not chat_history
+        if use_cache:
+            cached = self.cache.get(namespace, question, filename_filter)
+            if cached:
+                logger.info("Query cache HIT (namespace=%s)", namespace)
+                return {**cached, "rewritten_query": question,
+                        "namespace": namespace, "cached": True}
+
         retrieval_manager = self._get_retrieval_manager(namespace)
 
         # Step 1: Rewrite query (async — uses non-blocking memory summarization)
@@ -252,12 +271,34 @@ class RAGPipeline:
         result["rewritten_query"] = rewritten
         result["namespace"] = namespace
 
+        if use_cache:
+            self.cache.set(namespace, question, {
+                "answer": result["answer"],
+                "sources": result["sources"],
+                "num_sources_used": result["num_sources_used"],
+                **({"citation_verification": result["citation_verification"]}
+                   if "citation_verification" in result else {}),
+            }, filename_filter)
+
         logger.info(
             "Query answered with %d sources (namespace=%s)",
             result["num_sources_used"], namespace,
         )
         return result
     
+    @staticmethod
+    def _replay_cached_stream(cached: dict):
+        """Yield a cached answer as the same SSE sequence a live stream would:
+        sources → one token chunk → citation_verification → DONE."""
+        import json
+        yield f"data: {json.dumps({'type': 'sources', 'sources': cached.get('sources', [])})}\n\n"
+        answer = cached.get("answer", "")
+        if answer:
+            yield f"data: {json.dumps({'type': 'token', 'content': answer})}\n\n"
+        if "citation_verification" in cached:
+            yield f"data: {json.dumps({'type': 'citation_verification', **cached['citation_verification']})}\n\n"
+        yield "data: [DONE]\n\n"
+
     async def query_stream(
         self,
         question: str,
@@ -277,8 +318,18 @@ class RAGPipeline:
         import json
 
         chat_history = chat_history or []
+        use_cache = not chat_history
 
         try:
+            # C1: replay a cached answer as a stream (only when no history).
+            if use_cache:
+                cached = self.cache.get(namespace, question, filename_filter)
+                if cached:
+                    logger.info("Query cache HIT (stream, namespace=%s)", namespace)
+                    for event in self._replay_cached_stream(cached):
+                        yield event
+                    return
+
             rewritten = await self.generation_manager.rewrite_query(question, chat_history)
             retrieval_manager = self._get_retrieval_manager(namespace)
             docs = await self._multi_query_retrieve_async(
@@ -291,8 +342,22 @@ class RAGPipeline:
                 yield "data: [DONE]\n\n"
                 return
 
-            async for event in self.generation_manager.generate_stream(rewritten, docs, chat_history):
+            # C1: capture the finished answer via a side channel so we can cache
+            # it once the stream completes (no re-parsing of our own SSE).
+            capture = {} if use_cache else None
+            async for event in self.generation_manager.generate_stream(
+                rewritten, docs, chat_history, capture=capture
+            ):
                 yield event
+
+            if use_cache and capture and capture.get("answer"):
+                self.cache.set(namespace, question, {
+                    "answer": capture["answer"],
+                    "sources": capture.get("sources", []),
+                    "num_sources_used": len(docs),
+                    **({"citation_verification": capture["citation_verification"]}
+                       if "citation_verification" in capture else {}),
+                }, filename_filter)
 
         except Exception as e:
             # SEC-4: str(e) used to go straight into the SSE event sent to
@@ -322,6 +387,9 @@ class RAGPipeline:
             # don't linger in keyword search results until some later
             # upload happens to trigger a rebuild.
             retrieval_manager.invalidate_bm25_index()
+            # C3: drop this namespace's cached answers — a deleted doc must not
+            # keep answering from cache.
+            self.cache.invalidate(namespace)
             logger.info("Deleted Pinecone vectors for %s (namespace=%s)", filename, namespace)
         except Exception as e:
             logger.exception("delete_document failed for %s", filename)

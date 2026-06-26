@@ -135,9 +135,15 @@ how you *prove* quality instead of asserting it.
 
 Two tiers, both **namespaced per user** and **invalidated on upload/delete**:
 
-**C1 — Exact-match cache (do this first, trivial, ~5ms).**
-- Key: `qa:{namespace}:{sha256(normalized_question + filename_filter)}` → JSON(answer, sources).
-- Check before the pipeline; write after. TTL ~1h. Handles repeated/identical questions.
+**C1 — Exact-match cache.** ✅ *Done.* `src/components/cache.py` (`QueryCache`): key
+`qa:{namespace}:{sha256(normalized_question + filename_filter)}` → JSON(answer, sources, …), TTL 1h.
+Wired into both `pipeline.query` and `pipeline.query_stream` — checked before the pipeline, written
+after; on a hit the stream path *replays* the cached answer as SSE. **Fail-open and disabled until
+`REDIS_URL` is set** (no-op by default). Cached **only when there's no chat history** (with history
+the raw question isn't a safe key). Streamed answers are captured via a side channel in
+`generate_stream` (no re-parsing of our own SSE). fakeredis-backed unit + pipeline tests.
+**L4 (embed-once) absorbed here** — the exact-match key needs no embedding; the embedding-reuse
+matters only for C2.
 
 **C2 — Semantic cache (stretch, the "wow" feature).**
 - Reuse the query embedding (L4). Look up near-duplicate past questions for this namespace; if
@@ -146,9 +152,11 @@ Two tiers, both **namespaced per user** and **invalidated on upload/delete**:
   - *Scales:* **Redis Stack** vector index (RediSearch KNN) per namespace.
 - Start with the simplest; upgrade only if needed.
 
-**C3 — Invalidation (correctness — don't skip).** On upload/delete for a user, `SCAN`+`DEL` all
-`qa:{namespace}:*` keys so answers never go stale. Files: `documents.py` (call an
-`cache.invalidate(namespace)` in the upload/delete routes), new `src/components/cache.py`.
+**C3 — Invalidation (correctness — don't skip).** ✅ *Done.* `QueryCache.invalidate(namespace)`
+(`SCAN`+`DEL` of `qa:{namespace}:*`) is called from `pipeline.ingest_file` and
+`pipeline.delete_document`, so a user's cached answers are dropped the moment their documents
+change — they can never be served a stale answer. (Put on the pipeline methods, not the routes, so
+every caller benefits.)
 
 ### Pillar O — OBSERVABILITY / MONITORING (LangSmith)
 
@@ -294,7 +302,7 @@ Do the **simplifying** perf wins early; they delete code and de-risk demos.
 1. **L2 — Cohere rerank** ✅ *done* (removed `sentence-transformers`+`torch`; graceful skip fallback).
 2. **L3 — multi-query off by default** ✅ *done* (removes a sequential LLM hop). *(L4 embed-once folded into C1.)*
 3. **L5 — frontend SSE fallback → retry button** ✅ *done* (no silent expensive re-query).
-4. **C1 — Redis exact-match cache + C3 invalidation** (the latency headline; namespace-safe).
+4. **C1 — Redis exact-match cache + C3 invalidation** ✅ *done* (the latency headline; namespace-safe, fail-open). *(L4 absorbed.)*
 5. **O1–O3 — LangSmith tracing + per-stage timings** (now you can *measure* steps 1–4).
 6. **Q1 — token-based chunking** (folds into dropping `unstructured`, slimming B2).
 7. **L1 — retrieval design:** ship **Option A (dense + rerank)** first; revisit Option B (Pinecone

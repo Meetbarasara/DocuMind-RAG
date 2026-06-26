@@ -68,7 +68,8 @@ jobs:
             langchain langchain-openai langchain-pinecone langchain-core \
             openai tiktoken \
             pytest pytest-asyncio pytest-mock \
-            streamlit
+            streamlit \
+            redis fakeredis
 
       - name: Syntax check (all Python files)
         run: |

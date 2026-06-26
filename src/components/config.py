@@ -101,6 +101,14 @@ class Config:
     LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "documind")
     LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY")
 
+    # ── Caching: Redis query cache (C1) ───────────────────────────────
+    # Exact-match, per-namespace cache in front of the pipeline. Empty
+    # REDIS_URL => cache disabled (fail-open no-op), so the app runs
+    # unchanged until Redis is configured. Invalidated on every
+    # ingest/delete so a user never gets a stale answer (C3).
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
+    CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+
     # ── File handling ─────────────────────────────────────────────────
     # Temp directory for files downloaded from Supabase during processing
     UPLOAD_DIR: str = os.path.join(_PROJECT_ROOT, "tmp_uploads")
