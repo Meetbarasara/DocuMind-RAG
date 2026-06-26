@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 class RAGPipeline:
     """Orchestrates the full DocuMind RAG pipeline."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, db=None):
         self.config = config or Config()
 
         self.processor = DocumentProcessor(self.config)
@@ -46,6 +46,9 @@ class RAGPipeline:
         # C1: exact-match query cache (Redis). Fail-open and disabled until
         # REDIS_URL is set, so it's a no-op by default.
         self.cache = QueryCache(self.config)
+        # B-hybrid: SupabaseManager for storing/fetching page snapshots. None in
+        # unit tests => page-image storage is simply skipped (graceful).
+        self.db = db
 
         # RetrievalManager is created lazily (namespace can change per
         # request). Latency Optimization #6 fix: this used to be a plain
@@ -166,6 +169,11 @@ class RAGPipeline:
             # so the next query can't be served a stale one.
             self.cache.invalidate(effective_namespace)
 
+            # B-hybrid: persist the rendered page snapshots so the answer step
+            # can hand them to the multimodal LLM. Best-effort — a storage
+            # hiccup must not fail an already-successful ingest.
+            self._store_page_images(elements, effective_namespace)
+
             return len(docs)
 
         except CustomException:
@@ -173,6 +181,22 @@ class RAGPipeline:
         except Exception as e:
             logger.exception("ingest_file failed for %s", file_path)
             raise CustomException(f"Ingestion failed: {e}") from e
+
+    def _store_page_images(self, parsed: dict, namespace: str) -> None:
+        """Upload rendered page snapshots to Supabase (B-hybrid, best-effort)."""
+        if not (self.db and self.config.USE_IMAGE_ANSWERING):
+            return
+        page_images = parsed.get("visual_page_images") or {}
+        filename = parsed.get("filename")
+        stored = 0
+        for page_no, png in page_images.items():
+            try:
+                self.db.upload_page_image(namespace, filename, page_no, png)
+                stored += 1
+            except Exception as e:
+                logger.warning("Failed to store page snapshot p%s for %s: %s", page_no, filename, e)
+        if stored:
+            logger.info("Stored %d page snapshot(s) for %s", stored, filename)
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Multi-Query Retrieval Helper (Feature C)

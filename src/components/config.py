@@ -104,6 +104,15 @@ class Config:
     REDIS_URL: str = os.getenv("REDIS_URL", "")
     CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 
+    # ── Multimodal image answering — B-hybrid (PDF page snapshots) ─────
+    # Render PDF pages that contain images/tables to a snapshot at ingest;
+    # at answer time hand the relevant page(s) to the multimodal LLM so it
+    # reads tables/charts/figures in place. PDF only (DOCX can't be
+    # page-rendered with lightweight tools). Off => text-only, no snapshots.
+    USE_IMAGE_ANSWERING: bool = True
+    PAGE_IMAGE_DPI: int = 130                # legible text, smaller than 300
+    MAX_PAGE_IMAGES_PER_ANSWER: int = 2      # cap vision tokens per answer
+
     # ── File handling ─────────────────────────────────────────────────
     # Temp directory for files downloaded from Supabase during processing
     UPLOAD_DIR: str = os.path.join(_PROJECT_ROOT, "tmp_uploads")

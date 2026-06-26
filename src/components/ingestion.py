@@ -58,11 +58,11 @@ class DocumentProcessor:
         ext = path.suffix.lower()
         try:
             if ext == ".pdf":
-                pages, images = self._parse_pdf(file_path)
+                pages, images, page_images = self._parse_pdf(file_path)
             elif ext == ".docx":
-                pages, images = self._parse_docx(file_path)
+                pages, images, page_images = self._parse_docx(file_path)
             elif ext in (".txt", ".md"):
-                pages, images = self._parse_txt(file_path)
+                pages, images, page_images = self._parse_txt(file_path)
             else:
                 raise ValueError(f"Unsupported file type: {ext}")
 
@@ -76,6 +76,7 @@ class DocumentProcessor:
                 "filetype": ext.lstrip("."),
                 "pages": pages,
                 "images": images,
+                "visual_page_images": page_images,  # {page_no: png_bytes} (B-hybrid)
             }
         except Exception as e:
             logger.error("Error processing %s: %s", file_path, e, exc_info=True)
@@ -87,6 +88,7 @@ class DocumentProcessor:
         if not isinstance(parsed, dict) or not parsed.get("pages"):
             return []
 
+        visual_pages = set(parsed.get("visual_page_images", {}))
         docs: List[Document] = []
         for page_number, text in parsed["pages"]:
             text = (text or "").strip()
@@ -108,6 +110,8 @@ class DocumentProcessor:
                 # instead of a misleading "page 1".
                 if page_number is not None:
                     meta["page_number"] = page_number
+                    if page_number in visual_pages:
+                        meta["has_visual"] = True  # B-hybrid: this page has a snapshot
                 docs.append(Document(page_content=chunk, metadata=meta))
 
         logger.info("Built %d text chunk(s) from %s", len(docs), parsed.get("filename"))
@@ -124,11 +128,14 @@ class DocumentProcessor:
             "image_hash": hashlib.sha256(data).hexdigest(),
         }
 
-    def _parse_pdf(self, file_path) -> Tuple[list, list]:
-        pages, images = [], []
+    def _parse_pdf(self, file_path) -> Tuple[list, list, dict]:
+        pages, images, page_images = [], [], {}
+        render = getattr(self.config, "USE_IMAGE_ANSWERING", False)
+        dpi = getattr(self.config, "PAGE_IMAGE_DPI", 130)
         with fitz.open(file_path) as doc:
             for page_index, page in enumerate(doc, start=1):
                 pages.append((page_index, page.get_text()))
+                page_has_image = False
                 for img in page.get_images(full=True):
                     xref = img[0]
                     try:
@@ -138,9 +145,14 @@ class DocumentProcessor:
                     data = base.get("image", b"")
                     if len(data) >= _MIN_IMAGE_BYTES:
                         images.append(self._image_record(page_index, data, base.get("ext")))
-        return pages, images
+                        page_has_image = True
+                # B-hybrid: snapshot pages with visual content so the answer step
+                # can show the LLM the real page (text + figures read in place).
+                if render and page_has_image:
+                    page_images[page_index] = page.get_pixmap(dpi=dpi).tobytes("png")
+        return pages, images, page_images
 
-    def _parse_docx(self, file_path) -> Tuple[list, list]:
+    def _parse_docx(self, file_path) -> Tuple[list, list, dict]:
         doc = DocxDocument(file_path)
 
         parts = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
@@ -161,12 +173,13 @@ class DocumentProcessor:
                 if len(data) >= _MIN_IMAGE_BYTES:
                     images.append(self._image_record(None, data, "png"))
 
-        # DOCX has no page concept → page_number None (citations show N/A).
-        return [(None, text)], images
+        # DOCX has no page concept → page_number None (citations show N/A). No
+        # page snapshots: DOCX can't be page-rendered with lightweight tools.
+        return [(None, text)], images, {}
 
-    def _parse_txt(self, file_path) -> Tuple[list, list]:
+    def _parse_txt(self, file_path) -> Tuple[list, list, dict]:
         text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
-        return [(None, text)], []
+        return [(None, text)], [], {}
 
 
 if __name__ == "__main__":

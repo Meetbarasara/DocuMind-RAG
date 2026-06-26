@@ -155,6 +155,32 @@ class SupabaseManager:
             raise CustomException(f"Invalid filename: {filename!r}") from e
         return f"{user_id}/{safe_filename}"
 
+    # ── B-hybrid: page snapshots ──────────────────────────────────────────
+
+    @staticmethod
+    def _page_image_path(namespace: str, filename: str, page_number) -> str:
+        """Deterministic storage key for a rendered page snapshot."""
+        safe = sanitize_filename(filename)
+        return f"pages/{namespace}/{safe}/{page_number}.png"
+
+    def upload_page_image(self, namespace: str, filename: str, page_number, data: bytes) -> str:
+        """Store a rendered PDF page snapshot (B-hybrid). Upsert so re-uploads overwrite."""
+        path = self._page_image_path(namespace, filename, page_number)
+        self.service_client.storage.from_(self._bucket).upload(
+            path=path, file=data,
+            file_options={"content-type": "image/png", "upsert": "true"},
+        )
+        return path
+
+    def download_page_image(self, namespace: str, filename: str, page_number) -> Optional[bytes]:
+        """Fetch a page snapshot, or None if it isn't stored."""
+        path = self._page_image_path(namespace, filename, page_number)
+        try:
+            return self.service_client.storage.from_(self._bucket).download(path)
+        except Exception as e:
+            logger.warning("download_page_image miss for %s: %s", path, e)
+            return None
+
     def upload_file(
         self, user_id: str, file_bytes: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> str:

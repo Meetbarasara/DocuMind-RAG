@@ -35,7 +35,7 @@ def get_db() -> SupabaseManager:
 def get_pipeline() -> RAGPipeline:
     """Return the global :class:`RAGPipeline` instance (created once)."""
     if "pipeline" not in _cache:
-        _cache["pipeline"] = RAGPipeline(get_config())
+        _cache["pipeline"] = RAGPipeline(get_config(), db=get_db())
     return _cache["pipeline"]
 
 
