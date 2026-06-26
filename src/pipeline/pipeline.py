@@ -302,12 +302,22 @@ class RAGPipeline:
                 return {**cached, "rewritten_query": question,
                         "namespace": namespace, "cached": True}
 
-        retrieval_manager = self._get_retrieval_manager(namespace)
-
         # Step 1: Rewrite query (async — uses non-blocking memory summarization)
         rewritten = await self.generation_manager.rewrite_query(question, chat_history)
 
+        # C2: semantic cache — a near-identical past question (cosine on the
+        # query embedding) is served without retrieval or the LLM.
+        query_vec = None
+        if use_cache and self.config.USE_SEMANTIC_CACHE:
+            query_vec = self.embedding_manager.embed_query(rewritten)
+            sem = self.cache.get_semantic(namespace, query_vec, filename_filter)
+            if sem:
+                logger.info("Semantic cache HIT (namespace=%s)", namespace)
+                return {**sem, "rewritten_query": rewritten,
+                        "namespace": namespace, "cached": "semantic"}
+
         # Step 2: Multi-query parallel Pinecone lookups
+        retrieval_manager = self._get_retrieval_manager(namespace)
         docs = await self._multi_query_retrieve_async(rewritten, retrieval_manager, filename_filter)
 
         if not docs:
@@ -328,13 +338,16 @@ class RAGPipeline:
         result["namespace"] = namespace
 
         if use_cache:
-            self.cache.set(namespace, question, {
+            value = {
                 "answer": result["answer"],
                 "sources": result["sources"],
                 "num_sources_used": result["num_sources_used"],
                 **({"citation_verification": result["citation_verification"]}
                    if "citation_verification" in result else {}),
-            }, filename_filter)
+            }
+            self.cache.set(namespace, question, value, filename_filter)
+            if query_vec is not None:
+                self.cache.add_semantic(namespace, query_vec, value, filename_filter)
 
         logger.info(
             "Query answered with %d sources (namespace=%s)",
@@ -387,6 +400,18 @@ class RAGPipeline:
                     return
 
             rewritten = await self.generation_manager.rewrite_query(question, chat_history)
+
+            # C2: semantic cache — replay a near-identical past answer as a stream.
+            query_vec = None
+            if use_cache and self.config.USE_SEMANTIC_CACHE:
+                query_vec = self.embedding_manager.embed_query(rewritten)
+                sem = self.cache.get_semantic(namespace, query_vec, filename_filter)
+                if sem:
+                    logger.info("Semantic cache HIT (stream, namespace=%s)", namespace)
+                    for event in self._replay_cached_stream(sem):
+                        yield event
+                    return
+
             retrieval_manager = self._get_retrieval_manager(namespace)
             docs = await self._multi_query_retrieve_async(
                 rewritten, retrieval_manager, filename_filter
@@ -409,13 +434,16 @@ class RAGPipeline:
                 yield event
 
             if use_cache and capture and capture.get("answer"):
-                self.cache.set(namespace, question, {
+                value = {
                     "answer": capture["answer"],
                     "sources": capture.get("sources", []),
                     "num_sources_used": len(docs),
                     **({"citation_verification": capture["citation_verification"]}
                        if "citation_verification" in capture else {}),
-                }, filename_filter)
+                }
+                self.cache.set(namespace, question, value, filename_filter)
+                if query_vec is not None:
+                    self.cache.add_semantic(namespace, query_vec, value, filename_filter)
 
         except Exception as e:
             # SEC-4: str(e) used to go straight into the SSE event sent to

@@ -107,18 +107,67 @@ class QueryCache:
         except Exception as e:
             logger.warning("Query cache set failed (skipping): %s", e)
 
+    # ── Semantic cache (C2) ───────────────────────────────────────────────
+
+    @staticmethod
+    def _sem_key(namespace: str, filename_filter=None) -> str:
+        return f"sem:{namespace}:{filename_filter or '_all'}"
+
+    @staticmethod
+    def _cosine(a, b) -> float:
+        import numpy as np
+
+        va, vb = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+        na, nb = float(np.linalg.norm(va)), float(np.linalg.norm(vb))
+        if na == 0.0 or nb == 0.0:
+            return 0.0
+        return float(va @ vb / (na * nb))
+
+    def get_semantic(self, namespace: str, query_embedding, filename_filter=None, threshold: float = None):
+        """Return a cached answer for a *semantically* near-identical past query.
+
+        Reuses the query embedding to find the closest previously-answered
+        question in this namespace+filter; serves it if cosine >= threshold.
+        """
+        client = self._get_client()
+        if client is None:
+            return None
+        thr = threshold if threshold is not None else self.config.SEMANTIC_CACHE_THRESHOLD
+        try:
+            best_value, best_sim = None, 0.0
+            for raw in client.lrange(self._sem_key(namespace, filename_filter), 0, -1):
+                entry = json.loads(raw)
+                sim = self._cosine(query_embedding, entry["emb"])
+                if sim > best_sim:
+                    best_value, best_sim = entry["value"], sim
+            return best_value if best_sim >= thr else None
+        except Exception as e:
+            logger.warning("Semantic cache get failed (treating as miss): %s", e)
+            return None
+
+    def add_semantic(self, namespace: str, query_embedding, value: dict, filename_filter=None) -> None:
+        """Remember (embedding, answer) so future near-identical queries hit C2."""
+        client = self._get_client()
+        if client is None:
+            return
+        try:
+            key = self._sem_key(namespace, filename_filter)
+            client.lpush(key, json.dumps({"emb": list(query_embedding), "value": value}))
+            client.ltrim(key, 0, self.config.SEMANTIC_CACHE_MAX - 1)
+            client.expire(key, self.ttl)
+        except Exception as e:
+            logger.warning("Semantic cache add failed (skipping): %s", e)
+
     def invalidate(self, namespace: str) -> None:
-        """Drop every cached answer for *namespace* (C3 — on ingest/delete)."""
+        """Drop every cached answer (exact + semantic) for *namespace* (C3)."""
         client = self._get_client()
         if client is None:
             return
         try:
             keys = list(client.scan_iter(match=f"qa:{namespace}:*", count=500))
+            keys += list(client.scan_iter(match=f"sem:{namespace}:*", count=500))
             if keys:
                 client.delete(*keys)
-                logger.info(
-                    "Query cache invalidated %d entr%s for namespace=%s",
-                    len(keys), "y" if len(keys) == 1 else "ies", namespace,
-                )
+                logger.info("Query cache invalidated %d key(s) for namespace=%s", len(keys), namespace)
         except Exception as e:
             logger.warning("Query cache invalidate failed: %s", e)

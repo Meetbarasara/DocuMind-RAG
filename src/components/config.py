@@ -103,6 +103,11 @@ class Config:
     # ingest/delete so a user never gets a stale answer (C3).
     REDIS_URL: str = os.getenv("REDIS_URL", "")
     CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+    # C2 semantic cache: serve a near-identical past question (cosine on the
+    # query embedding) without retrieval/LLM. Scoped per namespace + filter.
+    USE_SEMANTIC_CACHE: bool = True
+    SEMANTIC_CACHE_THRESHOLD: float = 0.95   # cosine to treat two questions as the same
+    SEMANTIC_CACHE_MAX: int = 25             # recent (embedding, answer) entries kept
 
     # ── Multimodal image answering — B-hybrid (PDF page snapshots) ─────
     # Render PDF pages that contain images/tables to a snapshot at ingest;

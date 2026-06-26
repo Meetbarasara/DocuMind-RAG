@@ -38,6 +38,10 @@ class EmbeddingManager:
             openai_api_key=self.config.OPENAI_API_KEY,
         )
 
+    def embed_query(self, text: str) -> list:
+        """Embed a single query string (reuses the shared embedding model)."""
+        return self._embedding_model.embed_query(text)
+
     # ── Static helpers ────────────────────────────────────────────────────
 
     @staticmethod

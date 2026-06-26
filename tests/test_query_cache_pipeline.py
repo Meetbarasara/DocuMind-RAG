@@ -39,6 +39,7 @@ def _pipeline_with_fake_cache(monkeypatch):
     monkeypatch.setattr(p, "_multi_query_retrieve_async", fake_retrieve)
     monkeypatch.setattr(p.generation_manager, "rewrite_query", fake_rewrite)
     monkeypatch.setattr(p.generation_manager, "generate", fake_generate)
+    monkeypatch.setattr(p.embedding_manager, "embed_query", lambda text: [1.0, 0.0])  # C2 semantic lookup
     return p, calls
 
 
