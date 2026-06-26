@@ -30,7 +30,7 @@ def _pipeline_with_fake_cache(monkeypatch):
         calls["retrieve"] += 1
         return [Document(page_content="ctx", metadata={"filename": "f.pdf"})]
 
-    async def fake_generate(query, docs, chat_history=None):
+    async def fake_generate(query, docs, chat_history=None, page_images=None):
         calls["generate"] += 1
         return {"answer": "the answer", "sources": [{"filename": "f.pdf"}],
                 "num_sources_used": 1}

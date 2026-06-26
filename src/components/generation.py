@@ -320,6 +320,23 @@ class AnswerGeneration:
         logger.info("Rewrote query: '%s' → '%s'", query, standalone_query.strip())
         return standalone_query.strip()
 
+    # ── B-hybrid: multimodal message assembly ─────────────────────────────
+
+    @staticmethod
+    def _multimodal_messages(context: str, query: str, history_str: str, page_images: list):
+        """Build a multimodal message list: system (rules + context), then the
+        question plus the rendered page image(s) for the model to read in place."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        system = _RAG_SYSTEM_PROMPT.format(chat_history=history_str, context=context)
+        content = [{"type": "text", "text": query}]
+        for b64 in page_images:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}"},
+            })
+        return [SystemMessage(content=system), HumanMessage(content=content)]
+
     # ── Answer generation (blocking) ──────────────────────────────────────
 
     async def generate(
@@ -327,6 +344,7 @@ class AnswerGeneration:
         query: str,
         retrieved_docs: List[Document],
         chat_history: list = None,
+        page_images: list = None,
     ) -> Dict:
         """Generate a complete answer from retrieved docs (waits for full response).
 
@@ -335,15 +353,21 @@ class AnswerGeneration:
             and optionally ``citation_verification`` (Feature D).
         """
         context, sources = self._build_context_and_sources(retrieved_docs)
+        history_str = await self._format_history(chat_history) if chat_history else ""
 
-        # BUG-3 fix: chain.invoke() is a blocking call inside this async
-        # method — it would freeze FastAPI's event loop for the entire LLM
-        # round-trip, serializing concurrent requests. ainvoke() awaits it.
-        answer = await self.chain.ainvoke({
-            "context": context,
-            "question": query,
-            "chat_history": await self._format_history(chat_history) if chat_history else "",
-        })
+        # B-hybrid: if a retrieved chunk sits on a visual page, answer over the
+        # rendered page image(s) too (gpt-4o-mini is multimodal). Text-only
+        # answers stay on the fast prompt→llm chain. BUG-3 fix: ainvoke() awaits
+        # the LLM instead of blocking the event loop.
+        if page_images:
+            messages = self._multimodal_messages(context, query, history_str, page_images)
+            answer = (await self.llm.ainvoke(messages)).content
+        else:
+            answer = await self.chain.ainvoke({
+                "context": context,
+                "question": query,
+                "chat_history": history_str,
+            })
 
         result = {
             "answer": answer,
@@ -365,6 +389,7 @@ class AnswerGeneration:
         retrieved_docs: List[Document],
         chat_history: list = None,
         capture: dict = None,
+        page_images: list = None,
     ):
         """Yield Server-Sent Events (SSE) for real-time streaming responses.
 
@@ -395,18 +420,25 @@ class AnswerGeneration:
         # point of SSE streaming. astream() + `async for` yields control
         # back between tokens instead.
         try:
-            async for chunk in self.chain.astream({
-                "context": context,
-                "question": query,
-                "chat_history": chat_history_str,
-            }):
-                # Nit fix: StrOutputParser's astream() always yields a
-                # str-like chunk (confirmed empirically: it's a TextAccessor,
-                # itself a str subclass) — the dict-shaped fallback below
-                # was dead code that could never execute.
-                if chunk:
-                    full_answer += chunk
-                    yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+            if page_images:
+                # B-hybrid multimodal stream: llm.astream yields AIMessageChunks
+                # whose .content is the text delta (read it directly).
+                messages = self._multimodal_messages(context, query, chat_history_str, page_images)
+                async for chunk in self.llm.astream(messages):
+                    text = chunk.content if isinstance(chunk.content, str) else ""
+                    if text:
+                        full_answer += text
+                        yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
+            else:
+                async for chunk in self.chain.astream({
+                    "context": context,
+                    "question": query,
+                    "chat_history": chat_history_str,
+                }):
+                    # StrOutputParser's astream() always yields a str-like chunk.
+                    if chunk:
+                        full_answer += chunk
+                        yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
         except Exception as e:
             logger.error("SSE stream error: %s", e)
             yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"

@@ -198,6 +198,33 @@ class RAGPipeline:
         if stored:
             logger.info("Stored %d page snapshot(s) for %s", stored, filename)
 
+    def _gather_page_images(self, docs, namespace: str) -> list:
+        """B-hybrid: fetch base64 page snapshots for retrieved visual chunks.
+
+        Capped at MAX_PAGE_IMAGES_PER_ANSWER, deduped by (filename, page), and a
+        no-op when image answering is off or no storage is configured — so
+        text-only answers never pay a storage round-trip.
+        """
+        if not (self.db and self.config.USE_IMAGE_ANSWERING):
+            return []
+        import base64
+
+        cap = self.config.MAX_PAGE_IMAGES_PER_ANSWER
+        seen, images = set(), []
+        for d in docs:
+            if not d.metadata.get("has_visual"):
+                continue
+            fname, page = d.metadata.get("filename"), d.metadata.get("page_number")
+            if not fname or page is None or (fname, page) in seen:
+                continue
+            seen.add((fname, page))
+            data = self.db.download_page_image(namespace, fname, page)
+            if data:
+                images.append(base64.b64encode(data).decode())
+            if len(images) >= cap:
+                break
+        return images
+
     # ─────────────────────────────────────────────────────────────────────────
     #  Multi-Query Retrieval Helper (Feature C)
     # ─────────────────────────────────────────────────────────────────────────
@@ -290,8 +317,13 @@ class RAGPipeline:
                 "num_sources_used": 0, "namespace": namespace,
             }
 
+        # B-hybrid: attach rendered page image(s) for any retrieved visual chunk.
+        page_images = self._gather_page_images(docs, namespace)
+
         # Step 3: Generate answer (awaited — async since memory summarization is async)
-        result = await self.generation_manager.generate(rewritten, docs, chat_history)
+        result = await self.generation_manager.generate(
+            rewritten, docs, chat_history, page_images=page_images
+        )
         result["rewritten_query"] = rewritten
         result["namespace"] = namespace
 
@@ -366,11 +398,13 @@ class RAGPipeline:
                 yield "data: [DONE]\n\n"
                 return
 
+            # B-hybrid: attach page image(s) for retrieved visual chunks.
+            page_images = self._gather_page_images(docs, namespace)
             # C1: capture the finished answer via a side channel so we can cache
             # it once the stream completes (no re-parsing of our own SSE).
             capture = {} if use_cache else None
             async for event in self.generation_manager.generate_stream(
-                rewritten, docs, chat_history, capture=capture
+                rewritten, docs, chat_history, capture=capture, page_images=page_images
             ):
                 yield event
 
