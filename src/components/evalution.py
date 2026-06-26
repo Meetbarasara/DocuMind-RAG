@@ -239,3 +239,22 @@ def load_goldset(path: str) -> List[Dict]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def regression_failures(current: Dict, baseline: Dict, tolerance: float = 0.05) -> List:
+    """Metrics that dropped more than *tolerance* below the baseline (E2 CI gate).
+
+    Both inputs are flat ``{metric: float}`` dicts. Returns
+    ``[(metric, baseline_value, current_value), ...]`` — empty means no
+    regression. Non-numeric (and bool) baseline values, and metrics missing from
+    *current*, are skipped so the gate only fails on a genuine numeric drop.
+    """
+    failures = []
+    for metric, base_val in baseline.items():
+        if isinstance(base_val, bool) or not isinstance(base_val, (int, float)):
+            continue
+        cur_val = current.get(metric)
+        if isinstance(cur_val, (int, float)) and not isinstance(cur_val, bool):
+            if cur_val < base_val - tolerance:
+                failures.append((metric, base_val, cur_val))
+    return failures

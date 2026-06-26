@@ -27,6 +27,7 @@ from src.components.evalution import (
     load_goldset,
     mrr,
     recall_at_k,
+    regression_failures,
 )
 from src.logger import get_logger
 from src.pipeline.pipeline import RAGPipeline
@@ -130,13 +131,46 @@ def _print_summary(out: dict) -> None:
         print(f"\nUnanswerable refusal rate: {s['refusal_rate']:.3f}")
 
 
+def _flat_metrics(summary: dict) -> dict:
+    """Flatten the nested summary to one {metric: value} dict for comparison."""
+    flat = {}
+    flat.update(summary.get("retrieval") or {})
+    flat.update(summary.get("generation") or {})
+    if summary.get("refusal_rate") is not None:
+        flat["refusal_rate"] = summary["refusal_rate"]
+    return flat
+
+
 def main():
-    goldset_path = sys.argv[1] if len(sys.argv) > 1 else str(_ROOT / "data" / "eval" / "goldset.v1.jsonl")
+    args = sys.argv[1:]
+    check = "--check" in args
+    positional = [a for a in args if not a.startswith("-")]
+    goldset_path = positional[0] if positional else str(_ROOT / "data" / "eval" / "goldset.v1.jsonl")
+
     out = asyncio.run(run(goldset_path))
     _print_summary(out)
-    baseline = _ROOT / "data" / "eval" / "baseline.json"
-    baseline.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    print(f"\nSaved baseline -> {baseline}")
+
+    latest = _ROOT / "data" / "eval" / "baseline.json"
+    latest.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    print(f"\nSaved latest run -> {latest}")
+
+    if not check:
+        return
+
+    # E2 regression gate: compare this run to the committed reference baseline.
+    ref_path = _ROOT / "data" / "eval" / "baseline.committed.json"
+    if not ref_path.exists():
+        print(f"\n[--check] no committed baseline at {ref_path} — skipping the gate. "
+              "Commit a good run's baseline.json as baseline.committed.json to enable it.")
+        return
+    ref = json.loads(ref_path.read_text(encoding="utf-8"))
+    failures = regression_failures(_flat_metrics(out["summary"]), _flat_metrics(ref.get("summary", {})))
+    if failures:
+        print("\nEVAL REGRESSION vs committed baseline:")
+        for metric, base, cur in failures:
+            print(f"  {metric}: baseline {base:.3f} -> current {cur:.3f}")
+        sys.exit(1)
+    print("\nNo eval regression vs committed baseline.")
 
 
 if __name__ == "__main__":

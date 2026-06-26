@@ -6,7 +6,13 @@ functions and the gold set are deterministic and tested here.
 
 from pathlib import Path
 
-from src.components.evalution import hit_at_k, load_goldset, mrr, recall_at_k
+from src.components.evalution import (
+    hit_at_k,
+    load_goldset,
+    mrr,
+    recall_at_k,
+    regression_failures,
+)
 
 
 def test_hit_at_k():
@@ -38,3 +44,24 @@ def test_goldset_loads_and_is_well_formed():
         assert r["question"] and r["ground_truth"] and "relevant_pages" in r
     # must include at least one negative/unanswerable row (tests refusal behaviour)
     assert any(r.get("category") == "unanswerable" for r in rows)
+
+
+# ── E2: regression gate comparator ────────────────────────────────────────
+
+def test_regression_failures_flags_drops_past_tolerance():
+    base = {"recall@k": 0.9, "faithfulness": 0.8, "mrr": 0.7}
+    cur = {"recall@k": 0.7, "faithfulness": 0.85, "mrr": 0.67}  # recall -0.2, faith up, mrr -0.03
+    flagged = [m for m, _, _ in regression_failures(cur, base, tolerance=0.05)]
+    assert flagged == ["recall@k"]
+
+
+def test_regression_failures_empty_when_stable_or_improved():
+    base = {"recall@k": 0.9, "faithfulness": 0.8}
+    cur = {"recall@k": 0.92, "faithfulness": 0.79}  # improved / within tolerance
+    assert regression_failures(cur, base, tolerance=0.05) == []
+
+
+def test_regression_failures_ignores_missing_and_nonnumeric():
+    base = {"recall@k": 0.9, "note": "txt", "refused": True}
+    cur = {"faithfulness": 0.5}  # recall@k absent from current -> nothing to compare
+    assert regression_failures(cur, base, tolerance=0.05) == []

@@ -1,0 +1,50 @@
+name: Eval (nightly regression gate)
+
+# RAG eval is costly (real OpenAI + Pinecone + RAGAS calls), so it runs on a
+# schedule / on demand — NOT on every push or PR. The gate fails the run if a
+# metric drops past tolerance vs the committed baseline.
+#
+# Prerequisites (set once):
+#   1. Repo secrets: OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME,
+#      and (optional) COHERE_API_KEY.
+#   2. A reference baseline: run `python -m scripts.run_eval` locally with a good
+#      config, then commit its data/eval/baseline.json as
+#      data/eval/baseline.committed.json. Until that exists, the gate is skipped.
+
+on:
+  workflow_dispatch: {}        # run manually from the Actions tab
+  schedule:
+    - cron: "0 6 * * *"        # 06:00 UTC nightly
+
+jobs:
+  eval:
+    name: RAG eval regression gate
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      PINECONE_INDEX_NAME: ${{ secrets.PINECONE_INDEX_NAME }}
+      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Run eval + regression gate
+        run: python -m scripts.run_eval --check
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-baseline
+          path: data/eval/baseline.json
+          if-no-files-found: ignore
