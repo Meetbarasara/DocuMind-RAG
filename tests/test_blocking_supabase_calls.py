@@ -43,7 +43,14 @@ from src.api.dependencies import get_current_user, get_db, get_pipeline
 from src.api.main import app
 from src.components.config import Config
 
-_DELAY = 0.2
+# 0.5s, not the smallest value that "works": OS scheduling jitter under load is
+# roughly a constant additive overhead, not proportional to the sleep length, so
+# a small _DELAY leaves almost no absolute margin between "truly concurrent"
+# and "flaky false failure" even though the *relative* 1.5x threshold below
+# looks generous. Confirmed flaky in practice at 0.2s (sequential_calls=1
+# cases: get_current_user, signup -- the smallest absolute margin in this
+# file). Don't shrink this back down without re-checking under real load.
+_DELAY = 0.5
 
 _ALL_DB_METHODS = frozenset({
     "get_current_user", "sign_up", "sign_in", "sign_out",

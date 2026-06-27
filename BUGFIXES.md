@@ -1155,3 +1155,24 @@ The root cause is leaked *environment*, so the fix neutralizes the environment a
 
 ### Explain it simply (interview answer)
 My tests are meant to run sealed off, with fake keys. But the app reads a hidden settings file (`.env`) the moment it starts, and because my test folder lives *inside* the project, the test run reached up into the main project's real settings and grabbed my actual keys. One test was checking "what happens when the reranking service isn't configured?" — but with a real key present it quietly called the real service over the internet and got a real answer, so it failed, and only on my machine (the shared CI has no settings file). I made the tests blank out those few real keys before the app reads them, so the suite is sealed again: no surprise network calls, no real tracing, no accidental hits on a real database.
+
+
+## Flaky timing tests: `_DELAY` left almost no absolute margin against OS scheduling jitter
+
+### Symptom
+`tests/test_blocking_supabase_calls.py::test_get_current_user_dependency_does_not_block_event_loop` and `::test_signup_does_not_block_event_loop` flaked under load this session (failed twice, passed every time run in isolation) — a classic wall-clock timing flake, not a real concurrency regression. Both tests fire two concurrent calls that each sleep `_DELAY` and assert the *combined* wall time stays under `_DELAY * 1.5` (proof the calls overlapped instead of serializing).
+
+### Root Cause
+`_DELAY` was `0.2`s. For these two tests specifically (`sequential_calls=1`, the default — the smallest of any test in the file), the pass/fail threshold is `0.2 * 1.5 = 0.3`s, leaving only `0.1`s of *absolute* slack between "truly concurrent" (~0.2s) and the threshold. OS thread-scheduling jitter under load (CPU contention, GC pauses, antivirus, another process stealing a core) is roughly a **constant additive** overhead, not proportional to the sleep length — so a 50-100ms jitter spike, which is unremarkable on a loaded machine, is enough to blow through a 100ms absolute margin even though the code path is genuinely non-blocking. The other tests in the file (`sequential_calls=3`, e.g. upload/delete) have a 3x larger absolute margin (`0.6 * 0.5 = 0.3`s) and were never reported as flaky — consistent with this theory.
+
+### Fix
+Raised `_DELAY` from `0.2` to `0.5`. The pass/fail *formula* is unchanged (`elapsed < expected_if_concurrent * 1.5`) — only the absolute scale grows, so the same 50-100ms jitter spike is now a much smaller fraction of the margin (`0.25`s instead of `0.1`s for the `sequential_calls=1` cases).
+
+### Why this approach
+The plan named two options: a looser threshold, or a deterministic concurrency check (e.g. a shared counter proving real overlap, no wall-clock at all). Raising the absolute delay is the smaller, more surgical fix — it keeps the test's existing logic and intent exactly as documented (and as every other test in the file already does), just gives it enough room to absorb realistic jitter. A deterministic rewrite would be the more bulletproof long-term fix but is a bigger, more invasive change to test infrastructure that's working correctly today, everywhere except under load on two of its eight cases — not justified by the size of the actual problem.
+
+### Verification
+Could not reliably reproduce the flake on demand (it's specifically load-dependent, and this sandbox was idle) — confirmed instead by reasoning about the root cause precisely (the four numbers above: 0.2s delay, 1.5x multiplier, 0.1s margin, vs. 3x more margin on the non-flaky cases) and re-running the affected file **3 times back-to-back** with the fix applied (28s/33s/30s, all green) to confirm the new margin doesn't break the legitimate pass case. Full suite: unaffected (same pass count, only this file's wall time grew by ~3s total across its 8 timing assertions).
+
+### Explain it simply (interview answer)
+Two of my tests prove a fix works by racing two slow calls and checking they finished in about the time of *one* slow call, not two — if they overlap (correct), it's fast; if one blocks the other (the bug), it's twice as slow. I'd set the "slow" delay short to keep the suite quick, but that left almost no cushion: on a busy machine, ordinary OS scheduling noise (a few hundredths of a second) was sometimes enough to nudge a perfectly correct run just over my pass/fail line. I made the artificial delay longer — same test, same logic, just a bigger clock to measure against — so that ordinary noise is a much smaller fraction of the margin and stops causing false alarms.
