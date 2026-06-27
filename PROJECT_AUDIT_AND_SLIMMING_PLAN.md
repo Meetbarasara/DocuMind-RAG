@@ -509,7 +509,10 @@ you're about to remove.
 
 **Remove:** `unstructured[all-docs]`, `unstructured-client`, `langchain-experimental`,
 `langchain-chroma` (venv), `aiofiles`, `pinecone-client`, `python-pptx`, `openpyxl`, `pdf2image`,
-and `ragas`+`datasets` (→ `[eval]` extra).
+and `ragas`+`datasets` (→ `[eval]` extra). ✅ `langchain-experimental` + `aiofiles` *(2026-06-27,
+re-verified unused anywhere in src/frontend/scripts/tests, removed from requirements.txt; suite
+161 passed unchanged — confirms no behavior depended on them)*. `ragas`+`datasets` → `[eval]`
+extra is still open (tracked as its own item — Eval depth).
 **Add (B2a):** `pypdf`, `python-docx` (and keep `langchain-text-splitters`).
 **Net:** ~28 direct lines → ~15, and the install loses its multi-hundred-MB ML tail.
 
