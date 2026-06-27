@@ -5,7 +5,27 @@ PyMuPDF + python-docx, which import fast and offline, so there's nothing heavy
 or network-dependent to stub before importing src.* anymore.)
 """
 
-import pytest
+import os
+
+# Hermetic tests: don't let a developer's real .env leak live secrets in.
+# config.py calls load_dotenv() at import, and from a git worktree python-dotenv
+# walks up and finds the *parent checkout's* real .env. The shell-provided fake
+# keys (OPENAI/PINECONE/SUPABASE) override it, but anything NOT passed on the test
+# command leaks through — COHERE_API_KEY made the rerank-fallback test hit the
+# live Cohere API (returning real rankings instead of the no-client fallback),
+# LANGSMITH_* would emit real traces, and REDIS_URL would point cache tests at a
+# real server. Pin these to inert values *before* config is imported (conftest
+# runs first); setdefault so an explicit command-line value still wins for an
+# intentional live run.
+for _var, _val in (
+    ("COHERE_API_KEY", ""),
+    ("LANGSMITH_API_KEY", ""),
+    ("LANGSMITH_TRACING", "false"),
+    ("REDIS_URL", ""),
+):
+    os.environ.setdefault(_var, _val)
+
+import pytest  # noqa: E402  (must follow the env pinning above)
 
 
 @pytest.fixture(autouse=True)

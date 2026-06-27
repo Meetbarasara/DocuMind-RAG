@@ -1131,3 +1131,27 @@ Pinning `pinecone==7.3.0` documents exactly the version the suite is green again
 
 ### Explain it simply (interview answer)
 The library I use to talk to the vector database got renamed — it used to be published as "pinecone-client," now it's just "pinecone." My code already used the new one, but my install recipe still asked for the old, retired one by name, so anyone installing fresh would download both packages stacked on top of each other — a recipe for "it runs for me but breaks for you." I changed the recipe to ask for the new package at the exact version I test against. I also found the old name had snuck into an auto-generated file I'd accidentally committed, so I told git to stop tracking that file — it's the kind of thing the computer rebuilds automatically, so it never belonged in version control.
+
+
+## Test hermeticity: a developer's real `.env` leaked live secrets into the suite (live Cohere calls, LangSmith traces, real Redis)
+
+### Symptom
+On a machine with a real `.env`, `tests/test_cohere_rerank.py::test_rerank_without_client_falls_back_to_retrieval_order` failed: it asserts the no-Cohere-client path keeps retrieval order `[0, 1, 2]`, but got `[4, 2, 1]` — actual rankings from the **live** Cohere API. The same leak meant `LANGSMITH_*` and `REDIS_URL` were also live during the run (real trace emission, a real cache server). It passed in CI (no `.env` there) and failed only locally — a classic environment-dependent flake.
+
+### Root Cause
+`config.py` calls `load_dotenv()` at import. Run from a **git worktree**, python-dotenv's `find_dotenv` walks *up* the directory tree and finds the parent checkout's real `.env` (`E:\Desktop\DocuMind\.env`). The test command exports fake `OPENAI`/`PINECONE`/`SUPABASE` keys — and because `load_dotenv` defaults to `override=False`, those shell values win — but it does **not** set `COHERE_API_KEY` / `LANGSMITH_*` / `REDIS_URL`, so those leak in from the real `.env`. `Config`'s dataclass field defaults read `os.getenv(...)` at import, baking the real values in. In the failing test, `_make_rm` sets `_cohere_client=None` to exercise the "no key" path, but `_get_cohere_client()` then sees a truthy `COHERE_API_KEY`, builds a *real* client, and the test makes a live network call.
+
+### Fix
+`tests/conftest.py`: at module import (conftest is imported before any test module, hence before `config`), `os.environ.setdefault(...)` the leaked secrets to inert values — `COHERE_API_KEY=""`, `LANGSMITH_API_KEY=""`, `LANGSMITH_TRACING="false"`, `REDIS_URL=""`. `setdefault` (not assignment) so an explicit command-line value still wins for an intentional live run.
+
+### Why this approach
+The root cause is leaked *environment*, so the fix neutralizes the environment at the test boundary rather than patching each test that happens to trip over it. Doing it in `conftest` top-level (not a fixture) is what makes it work: `Config` reads the keys at import time, so the values must be pinned *before* the first test module imports `config` — a fixture would run too late. `setdefault` keeps live runs opt-in. The same four-line pin also stops the suite from emitting real LangSmith traces and touching a real Redis — the same class of bug, fixed once.
+
+### Verification
+- `test_cohere_rerank.py`: **4 passed** (was 1 failing — expected `[0, 1, 2]`, got live `[4, 2, 1]`).
+- Confirmed the precedence: under the test run `Config().COHERE_API_KEY` now resolves to `""` (was a real 40-char key).
+- **Pre-existing, not caused by the L4 change committed alongside:** the failure reproduces on the stashed (pre-L4) tree, so it's environmental.
+- Full suite: **133 passed**; the only 2 failures are the documented wall-clock `does_not_block_event_loop` flakes, which pass **13/13 in isolation**.
+
+### Explain it simply (interview answer)
+My tests are meant to run sealed off, with fake keys. But the app reads a hidden settings file (`.env`) the moment it starts, and because my test folder lives *inside* the project, the test run reached up into the main project's real settings and grabbed my actual keys. One test was checking "what happens when the reranking service isn't configured?" — but with a real key present it quietly called the real service over the internet and got a real answer, so it failed, and only on my machine (the shared CI has no settings file). I made the tests blank out those few real keys before the app reads them, so the suite is sealed again: no surprise network calls, no real tracing, no accidental hits on a real database.
