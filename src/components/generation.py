@@ -227,11 +227,19 @@ class AnswerGeneration:
     def _verify_citations(
         answer: str, sources: List[Dict]
     ) -> Dict[str, Any]:
-        """Verify that citations in the answer match retrieved sources.
+        """Verify that citations in the answer name a real retrieved source.
 
         Parses patterns like ``[Source: filename, Page: X]`` and
-        ``[SourceN: filename, Page: X]`` from the generated answer, then
-        checks each against the provided sources list.
+        ``[SourceN: filename, Page: X]`` from the generated answer and checks
+        each against the provided sources list.
+
+        Q3: matching is **filename-level only** — the page number is kept in
+        the returned citation string for display, but no longer gates
+        verified/unverified. Page matching was noisy: chunking is per-page so
+        a multi-page answer can correctly cite a page that isn't the chunk's
+        single recorded page_number, and the B-hybrid multimodal path lets the
+        LLM read whole page images, not just the chunk's tagged page. Filename
+        membership is what actually answers "is this a real source?".
 
         Args:
             answer:  The LLM-generated answer text.
@@ -256,12 +264,8 @@ class AnswerGeneration:
                 "score": 1.0,  # No citations to verify = perfect score
             }
 
-        # Build a lookup set from sources: (filename, page)
-        source_lookup = set()
-        for s in sources:
-            fname = str(s.get("filename", "")).strip()
-            page = str(s.get("page", "N/A")).strip()
-            source_lookup.add((fname.lower(), page.lower()))
+        # Build a lookup set of real filenames (Q3: filename-level only).
+        source_filenames = {str(s.get("filename", "")).strip().lower() for s in sources}
 
         verified = []
         unverified = []
@@ -271,7 +275,7 @@ class AnswerGeneration:
             cited_page = cited_page.strip()
             citation_str = f"[Source: {cited_file}, Page: {cited_page}]"
 
-            if (cited_file.lower(), cited_page.lower()) in source_lookup:
+            if cited_file.lower() in source_filenames:
                 verified.append(citation_str)
             else:
                 unverified.append(citation_str)

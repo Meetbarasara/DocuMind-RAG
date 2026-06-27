@@ -131,10 +131,12 @@ Files: `ingestion.py` (rewrite), `config.py`, `utils.py` (removed element helper
 precision. This two-stage shape is the single most important quality decision and it's easy to
 defend.
 
-**Q3 — Keep grounding guardrails (already present, make them explicit).** Strict "answer only from
-the context, otherwise say you can't find it" prompt + inline `[Source: file, Page]` citations +
-post-hoc citation verification. Simplify citation verification to **filename-level** (page numbers
-are noisy) so its score is meaningful. Files: `generation.py`.
+**Q3 — Keep grounding guardrails (already present, make them explicit).** ✅ *Done.* Strict "answer
+only from the context, otherwise say you can't find it" prompt + inline `[Source: file, Page]`
+citations + post-hoc citation verification. Citation verification is now **filename-level only** —
+the page number stays in the displayed citation string but no longer gates verified/unverified, since
+page matching was noisy (per-page chunking vs. multi-page answers; the B-hybrid multimodal path lets
+the LLM read a whole page image, not just one chunk's tagged page). Files: `generation.py`.
 
 **Q4 — Tune `TOP_K` / `RERANKER_TOP_K` with the eval set, not by guessing** (see Pillar E). This is
 how you *prove* quality instead of asserting it.
