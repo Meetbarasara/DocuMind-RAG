@@ -1,0 +1,27 @@
+# Never bake secrets into an image layer.
+.env
+
+.git/
+.github/
+
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+.pytest_cache/
+.ruff_cache/
+tests/
+
+logs/
+*.log
+tmp_uploads/
+
+# Not needed at runtime — sample docs/eval data/scripts are for the offline
+# eval harness (scripts/run_eval.py), not the live API or frontend.
+docs/
+data/
+scripts/
+
+.DS_Store
+.vscode/

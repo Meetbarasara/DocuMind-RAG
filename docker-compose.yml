@@ -1,0 +1,36 @@
+# Runs the API + Streamlit frontend from the one shared image built from
+# ./Dockerfile. Copy .env.example to .env and fill in your secrets first —
+# both services read it; Config's fail-fast validation (Part C) means a
+# misconfigured .env fails the api container at startup with a clear error
+# instead of partially booting.
+services:
+  api:
+    build: .
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  frontend:
+    build: .
+    command: ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      # Talk to the api container by its Compose service name, not localhost
+      # (which inside this container means "myself", not the api service).
+      API_BASE: http://api:8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

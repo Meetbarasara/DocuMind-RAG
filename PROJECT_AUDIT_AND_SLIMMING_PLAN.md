@@ -415,9 +415,14 @@ Only the high-leverage items. Don't gold-plate a demo.
    `/api/chat/query` with a mocked pipeline and asserts a 200 + shape. This is the test class that
    would have caught the original BUG-1 (and would catch A1's API surface). CI already runs
    `pytest`; just add the test.
-6. **Containerize:** a small `Dockerfile` (slim base, `pip install -e .`, non-root user,
-   `HEALTHCHECK` hitting `/health`) + a `docker-compose.yml` running API + frontend. With the
-   slimmed deps (B2/B3) the image is finally a sane size. This is a concrete "I can ship it" signal.
+6. **Containerize.** ✅ *Done (2026-06-27).* One shared `Dockerfile` (`python:3.13.7-slim`,
+   `pip install -r requirements.txt` which resolves the repo's own `-e .`, non-root `documind` user,
+   `HEALTHCHECK` hitting `/health`) + `docker-compose.yml` running it twice — `api` (uvicorn) and
+   `frontend` (Streamlit, `API_BASE=http://api:8000` over the Compose network, its own healthcheck
+   against Streamlit's `/_stcore/health`, gated on the api container being healthy first). Both
+   commands and both health endpoints were boot-tested directly (this sandbox has no Docker daemon
+   to run an actual `docker build`/`up`, so the image build itself is unverified — flagged to the
+   user to confirm on a real Docker install).
 7. **Pin what you keep, drop what you don't:** after B3, every line in `requirements.txt` should be
    imported somewhere. Split a `[dev]`/`[eval]` extra for `pytest`, `ragas`, `datasets`, lint.
 
