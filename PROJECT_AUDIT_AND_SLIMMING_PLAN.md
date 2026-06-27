@@ -206,21 +206,28 @@ change: suite was 161 passed before and after removal.
 
 ### 🟡 A7 (LOW) — README ↔ code drift (config defaults, env-overridability, overlap)
 
-- **Evidence:**
-  - README says `SIMILARITY_THRESHOLD = 0.30` ([README.md:331](README.md:331)); code is `0.50`
-    ([config.py:30](src/components/config.py:30)).
-  - README: *"All settings … overridable via `.env`"* ([README.md:322](README.md:322)). In
-    reality only `PDF_PARSE_STRATEGY`, `CORS_ORIGINS`, and the secret keys read from env; the rest
-    are hardcoded dataclass defaults.
-  - README ingestion diagram says `overlap 500` as if it's a headline; it's applied but its real
-    effect under `chunk_by_title` is modest.
-- **Why it matters:** Doc/code drift is the cheapest possible "attention to detail" signal to get
-  right, and the easiest to get caught on.
-- **Fix:** reconcile the README numbers to the actual `Config`, and either make the documented
-  knobs truly env-driven (via `pydantic-settings`, see Part C) or stop claiming they are.
-  **Partially done (2026-06-27):** `Config` is now `pydantic_settings.BaseSettings`, so *every*
-  field is genuinely env-overridable (not just the few that had a manual `os.getenv()` call before)
-  — the README pass to reconcile the actual numbers/list is still open.
+✅ **Fixed (2026-06-28).** The original examples below were themselves already stale by the time
+this pass started (`SIMILARITY_THRESHOLD` already read `0.50` in both README and code;
+`PDF_PARSE_STRATEGY` no longer exists, predates B1/B2) — but a full re-audit against the current
+code found much larger drift than either the original text or memory anticipated: the README still
+documented the **removed** `/api/evaluate/*` routes and `evaluate.py` (gone since B5), called
+`Config` a "dataclass" (it's `pydantic_settings.BaseSettings` since Part C), and was missing nearly
+every feature shipped in the perf-plan/Part C work — hybrid retrieval, Cohere rerank, Redis caching,
+LangSmith observability, multimodal image answering, background ingestion, Docker. Also found one
+**setup-blocking inaccuracy** while re-verifying: the README claimed the Supabase storage bucket is
+"created automatically on first startup" — there is no `create_bucket(...)` call anywhere in
+`database.py`; a user trusting that claim and skipping the manual step would have every upload fail.
+Rewrote Features, Tech Stack, Project Structure, Setup (added the Docker option), API Reference
+(removed the dead eval section, fixed the `/api/chat/query` example response shape — `content` only
+exists on the streaming endpoint's `sources` event, not the blocking one), Configuration Reference
+(split into Core + Feature-flags, covering the knobs that actually exist now), the architecture
+diagrams, and "How It Works" (added the missing rerank step + background-ingestion framing).
+- **Original evidence (now stale):**
+  - README said `SIMILARITY_THRESHOLD = 0.30`; code is `0.50` — both already read `0.50` by the
+    time this pass started.
+  - README: *"All settings … overridable via `.env`"*. **Now actually true** — Part C's
+    `pydantic-settings` migration makes every field genuinely env-overridable, not just the few
+    with a manual `os.getenv()` call.
 
 ### 🟡 A8 (LOW) — Hybrid path depends on rank_bm25/LangChain **internal** attributes
 

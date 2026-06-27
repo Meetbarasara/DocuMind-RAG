@@ -46,13 +46,15 @@ Every answer is:
        │                 │                  │
 ┌──────▼──────┐  ┌───────▼───────┐  ┌──────▼──────────────────────┐
 │  Supabase   │  │  RAG Pipeline │  │       RAG Pipeline           │
-│  Auth +     │  │  Ingestion    │  │  Retrieval → Generation      │
-│  Storage    │  │  Embedding    │  │  Query Rewrite · Citations   │
+│  Auth +     │  │  Ingestion    │  │  Cache → Retrieve → Rerank   │
+│  Storage    │  │  (background) │  │  → Generate · Citations      │
 └─────────────┘  └───────┬───────┘  └──────┬──────────────────────┘
                          │                  │
                 ┌────────▼──────────────────▼────────┐
                 │          External Services          │
                 │  Pinecone (vectors) · OpenAI (LLM)  │
+                │  + optional: Cohere (rerank) ·       │
+                │    Redis (cache) · LangSmith (trace) │
                 └────────────────────────────────────┘
 ```
 
@@ -62,30 +64,39 @@ Every answer is:
 Document Upload
       │
       ▼
+ [Accept]     ── validate, schedule ──▶  202 + job id (returns immediately)
+      │
+      ▼ (background)
  [Ingestion]  ── PyMuPDF / python-docx ──▶  Per-page text + extracted images
       │
       ▼
- [Chunking]   ── 512-token chunks ──▶  LangChain Documents with metadata
+ [Chunking]   ── 512 tiktoken tokens ──▶  LangChain Documents with metadata
       │
       ▼
- [Embedding]  ── text-embedding-3-small ──▶  1536-dim vectors
+ [Embedding]  ── text-embedding-3-small ──▶  1536-dim vectors (+ sparse, if hybrid is on)
       │
       ▼
- [Pinecone]   ── namespace = user_id ──▶  Per-user vector isolation
+ [Pinecone]   ── namespace = user_id ──▶  Per-user vector isolation; job → completed
       │
 User Question
       │
       ▼
+ [Cache?]     ── Redis exact/semantic match ──▶  HIT: answer in ms, skip everything below
+      │ MISS
+      ▼
  [Rewrite]    ── gpt-4o-mini ──▶  Standalone query (resolves pronouns)
       │
       ▼
- [Retrieve]   ── cosine similarity ──▶  Top-K chunks above threshold
+ [Retrieve]   ── dense cosine, or native hybrid ──▶  Top-K candidates above threshold
       │
       ▼
- [Generate]   ── gpt-4o-mini ──▶  Grounded answer with [Source: file, Page X]
+ [Rerank]     ── Cohere Rerank API ──▶  Most relevant few, reordered
       │
       ▼
- SSE Stream ──▶  Token-by-token to UI
+ [Generate]   ── gpt-4o-mini (+ page image, if visual) ──▶  Grounded, cited answer
+      │
+      ▼
+ SSE Stream ──▶  Token-by-token to UI; cache the answer; 👍/👎 → LangSmith
 ```
 
 ---
@@ -94,17 +105,21 @@ User Question
 
 | Feature | Details |
 |---|---|
-| 📄 **Document ingestion** | PDF, DOCX, TXT via PyMuPDF + python-docx (images extracted too) |
+| 📄 **Document ingestion** | PDF, DOCX, TXT via PyMuPDF + python-docx (images extracted too); upload returns immediately, ingestion runs in the background |
 | 🧩 **Token-based chunking** | Token-boundary splitting via tiktoken — predictable context size + cost |
-| 🔢 **Vector embeddings** | `text-embedding-3-small` (1536-dim), batched upsert to Pinecone |
-| 🔍 **Similarity retrieval** | Cosine search with score threshold filtering |
+| 🔍 **Hybrid retrieval** | Dense (cosine) search, or Pinecone *native* server-side sparse+dense fusion (off by default — needs a dotproduct index) |
+| 🎯 **Re-ranking** | Cohere Rerank API narrows the candidate set to the most relevant chunks (graceful fallback to retrieval order without a key) |
 | ✍️ **Query rewriting** | Automatic follow-up resolution using conversation history |
 | 💬 **Streaming responses** | Server-Sent Events (SSE) for real-time token delivery |
-| 📚 **Inline citations** | `[Source: filename, Page X]` in every answer |
+| 🖼️ **Multimodal answers** | Pages with figures/tables are rendered as images; the LLM reads the actual page for those answers |
+| 📚 **Inline citations** | `[Source: filename, Page X]` in every answer, verified against the real retrieved sources |
+| ⚡ **Caching** | Redis exact-match + semantic (near-duplicate question) cache — repeat questions skip retrieval + the LLM entirely (off by default — needs `REDIS_URL`) |
+| 📊 **Observability** | LangSmith tracing (per-stage timings, token/cost) + a 👍/👎 feedback loop, both off by default — needs `LANGSMITH_*` |
+| 🧪 **Offline evaluation** | Retrieval (Hit@k/Recall@k/MRR) + RAGAS generation metrics against a versioned gold set, with a CI regression gate — see [`scripts/run_eval.py`](scripts/run_eval.py) |
 | 🔒 **Multi-user auth** | Supabase Auth (JWT) with per-user Pinecone namespace isolation |
 | ☁️ **Cloud storage** | Files stored in Supabase Storage, metadata in PostgreSQL |
-| 🧪 **RAGAS evaluation** | Faithfulness, answer relevancy, context precision/recall |
-| 🔄 **CI pipeline** | GitHub Actions: lint → syntax check → import validation |
+| 🐳 **Containerized** | `Dockerfile` + `docker-compose.yml` (API + frontend) |
+| 🔄 **CI pipeline** | GitHub Actions: lint → syntax check → import validation → tests |
 
 ---
 
@@ -112,16 +127,21 @@ User Question
 
 | Layer | Technology |
 |---|---|
-| **LLM** | OpenAI `gpt-4o-mini` |
+| **LLM** | OpenAI `gpt-4o-mini` (multimodal for page-image answers) |
 | **Embeddings** | OpenAI `text-embedding-3-small` |
-| **Vector DB** | Pinecone (serverless, cosine metric) |
+| **Vector DB** | Pinecone (serverless; cosine, or dotproduct for native hybrid) |
+| **Re-ranking** | Cohere Rerank API (optional) |
+| **Caching** | Redis (optional — exact-match + semantic) |
+| **Observability** | LangSmith (optional — tracing, per-stage timing, feedback) |
 | **Document parsing** | PyMuPDF (PDF) + python-docx (DOCX) |
 | **RAG framework** | LangChain + `langchain-pinecone` |
+| **Settings** | `pydantic-settings` (fail-fast secret validation at startup) |
 | **Backend API** | FastAPI + Uvicorn |
 | **Frontend** | Streamlit |
 | **Auth + Storage** | Supabase (PostgreSQL + S3-compatible storage) |
-| **Evaluation** | RAGAS |
+| **Evaluation** | RAGAS (offline harness, not a live endpoint) |
 | **HTTP client** | httpx (async SSE streaming) |
+| **Containers** | Docker + Docker Compose |
 
 ---
 
@@ -131,13 +151,15 @@ User Question
 DocuMind/
 ├── src/
 │   ├── components/
-│   │   ├── config.py          # Centralized dataclass config
-│   │   ├── ingestion.py       # Document parsing & chunking
-│   │   ├── embeddings.py      # OpenAI embed + Pinecone upsert
-│   │   ├── retrieval.py       # Similarity search with filters
-│   │   ├── generation.py      # Query rewriting + LLM generation + SSE
+│   │   ├── config.py          # pydantic-settings: typed, fail-fast, env-driven config
+│   │   ├── ingestion.py       # Document parsing & token-based chunking
+│   │   ├── embeddings.py      # OpenAI embed + Pinecone upsert (dense or native hybrid)
+│   │   ├── retrieval.py       # Dense/hybrid search + Cohere re-rank
+│   │   ├── sparse.py          # Stateless lexical encoder for native hybrid (no extra dep)
+│   │   ├── generation.py      # Query rewriting + LLM generation + SSE + feedback run_id
+│   │   ├── cache.py           # Redis exact-match + semantic query cache
 │   │   ├── database.py        # Supabase auth + file storage + metadata
-│   │   └── evalution.py       # RAGAS evaluation metrics
+│   │   └── evalution.py       # RAGAS + retrieval metrics (used by scripts/run_eval.py)
 │   ├── pipeline/
 │   │   └── pipeline.py        # End-to-end RAG orchestrator
 │   ├── api/
@@ -145,24 +167,28 @@ DocuMind/
 │   │   ├── dependencies.py    # Singleton DI: Config, DB, Pipeline
 │   │   └── router/
 │   │       ├── auth.py        # POST /api/auth/{signup,login,logout,me}
-│   │       ├── documents.py   # POST/GET/DELETE /api/documents/
-│   │       ├── chat.py        # POST /api/chat/query[/stream]
-│   │       └── evaluate.py    # POST /api/evaluate/{single,batch}
+│   │       ├── documents.py   # Upload (background ingestion) + list + delete
+│   │       └── chat.py        # POST /api/chat/{query[/stream],feedback}
 │   ├── logger.py              # Rotating file + stream logger
 │   ├── exception.py           # Custom exception with traceback detail
-│   └── utils.py               # Element helpers, chat history formatting
+│   └── utils.py               # Filename sanitization, chat history formatting
 ├── frontend/
 │   ├── app.py                 # Streamlit entry point + routing
 │   ├── utils.py               # httpx API client + session state helpers
 │   └── pages/
 │       ├── login.py           # Sign-in / Sign-up UI
-│       ├── chat.py            # Streaming chat + citations + doc filter
+│       ├── chat.py            # Streaming chat + citations + 👍/👎 feedback
 │       └── documents.py       # Upload + list + delete documents
-├── docs/                      # Sample documents for testing
-├── logs/                      # Rotating log files (auto-created)
+├── scripts/
+│   └── run_eval.py            # Offline eval harness (retrieval metrics + RAGAS + CI gate)
+├── docs/                       # Sample documents for testing / the eval gold set
+├── data/eval/                  # Gold set + committed baseline for the CI regression gate
+├── logs/                       # Rotating log files (auto-created)
 ├── .github/
 │   └── workflows/
 │       └── ci.yml             # GitHub Actions CI
+├── Dockerfile                  # Shared image for the API + frontend services
+├── docker-compose.yml          # Runs both services together
 ├── supabase_migration.sql     # DB schema — run once in Supabase SQL Editor
 ├── .env.example               # Environment variables template
 ├── requirements.txt
@@ -175,12 +201,15 @@ DocuMind/
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (or Docker, if you'd rather skip the venv — see step 4)
 - [OpenAI API key](https://platform.openai.com/api-keys)
-- [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `1536`, metric: `cosine`)
+- [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `1536`,
+  metric: `cosine`). Native hybrid search (off by default) needs a *second*, `dotproduct` index instead.
 - [Supabase project](https://supabase.com) — free tier works fine
 
 ### 1. Clone & install
+
+Skip this step if you're using Docker (step 4, option A) — the image installs everything.
 
 ```bash
 git clone https://github.com/Meetbarasara/DocuMind-RAG.git
@@ -215,7 +244,8 @@ SUPABASE_SERVICE_ROLE_KEY=eyJ...
 
 ### 3. Set up Supabase
 
-**Storage bucket** — created automatically on first startup, or run:
+**Storage bucket** — not created automatically; create it once before the first upload (the app
+assumes `documents` already exists and will fail uploads otherwise):
 ```python
 from supabase import create_client
 c = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -230,6 +260,13 @@ cat supabase_migration.sql
 
 ### 4. Run the application
 
+**Option A — Docker (one command, both services):**
+```bash
+docker compose up --build
+```
+
+**Option B — manually:**
+
 **Terminal 1 — FastAPI backend:**
 ```bash
 python -m uvicorn src.api.main:app --reload --port 8000
@@ -240,7 +277,9 @@ python -m uvicorn src.api.main:app --reload --port 8000
 streamlit run frontend/app.py
 ```
 
-Open **http://localhost:8501** in your browser.
+Open **http://localhost:8501** in your browser. `Config`'s fail-fast validation means the app
+refuses to boot if a required secret (`OPENAI_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_*`) is
+missing or blank — check the startup error if it doesn't come up.
 
 ---
 
@@ -273,14 +312,13 @@ Base URL: `http://localhost:8000`
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/chat/query` | Blocking Q&A → `{answer, sources, ...}` |
-| `POST` | `/api/chat/query/stream` | Streaming Q&A (SSE) → token-by-token |
+| `POST` | `/api/chat/query/stream` | Streaming Q&A (SSE) → token-by-token, plus a `meta` event with a LangSmith `run_id` when tracing is on |
+| `POST` | `/api/chat/feedback` | Record a 👍/👎 (`{run_id, score}`) as a LangSmith feedback score; no-op when tracing is off |
 
-### Evaluation (RAGAS)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/evaluate/single` | Score one Q&A pair (faithfulness, relevancy, precision) |
-| `POST` | `/api/evaluate/batch` | Score a batch of Q&A pairs + return summary averages |
+> **Evaluation isn't a live endpoint.** It's an offline harness (`scripts/run_eval.py`) over a
+> versioned gold set (`data/eval/`) — retrieval metrics (Hit@k/Recall@k/MRR) + RAGAS generation
+> metrics + a refusal-rate check, with a CI gate that fails the build on a regression against the
+> committed baseline. Run it on demand: `python -m scripts.run_eval`.
 
 #### Example: Query
 
@@ -305,7 +343,8 @@ curl -X POST http://localhost:8000/api/chat/query \
       "filename": "report.pdf",
       "page": 3,
       "chunk_type": "text",
-      "content": "..."
+      "chunk_id": "report.pdf::a1b2c3...",
+      "has_visual": false
     }
   ],
   "rewritten_query": "What are the key findings?",
@@ -313,6 +352,8 @@ curl -X POST http://localhost:8000/api/chat/query \
   "namespace": "eb332ef7-..."
 }
 ```
+> The streaming endpoint's `sources` event additionally includes a `content` snippet per source
+> (a short preview of the chunk text) — the blocking endpoint above does not.
 
 Interactive docs: **http://localhost:8000/docs**
 
@@ -320,7 +361,11 @@ Interactive docs: **http://localhost:8000/docs**
 
 ## Configuration Reference
 
-All settings live in `src/components/config.py` and are overridable via `.env`:
+All settings live in `src/components/config.py` (`pydantic-settings`) and are overridable via
+`.env` — the five required secrets (`OPENAI_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`,
+`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) fail fast at startup if missing or blank.
+
+**Core**
 
 | Setting | Default | Description |
 |---|---|---|
@@ -332,8 +377,21 @@ All settings live in `src/components/config.py` and are overridable via `.env`:
 | `SIMILARITY_THRESHOLD` | `0.50` | Min cosine score to keep |
 | `LLM_TEMPERATURE` | `0.1` | LLM creativity (lower = more factual) |
 | `RERANKER_TOP_K` | `3` | Chunks kept after Cohere rerank |
-| `EMBEDDING_BATCH_SIZE` | `100` | Vectors per Pinecone upsert batch |
+| `EMBEDDING_BATCH_SIZE` | `100` | Vectors per Pinecone upsert batch (native-hybrid upsert path) |
+| `MAX_UPLOAD_SIZE_BYTES` | `50MB` | Upload size cap, enforced before buffering the file |
 | `API_PORT` | `8000` | FastAPI server port |
+
+**Feature flags / optional services** (all need the matching key/URL to actually activate)
+
+| Setting | Default | Description |
+|---|---|---|
+| `USE_HYBRID_SEARCH` | `false` | Pinecone native sparse+dense fusion — needs a `dotproduct` index + re-ingest |
+| `USE_RERANKING` | `true` | Cohere Rerank API — needs `COHERE_API_KEY`, else falls back to retrieval order |
+| `REDIS_URL` | unset | Exact-match query cache — unset disables it (fail-open no-op) |
+| `USE_SEMANTIC_CACHE` | `true` | Serve a near-identical past question (cosine on its embedding); needs `REDIS_URL` |
+| `LANGSMITH_TRACING` | `false` | Trace every chain to LangSmith — needs `LANGSMITH_API_KEY` |
+| `USE_IMAGE_ANSWERING` | `true` | Render PDF pages with figures/tables and answer over the page image |
+| `USE_CITATION_VERIFICATION` | `true` | Flag whether each `[Source: ...]` citation names a real retrieved file |
 
 ---
 
@@ -341,22 +399,30 @@ All settings live in `src/components/config.py` and are overridable via `.env`:
 
 ### Ingestion
 
-1. File is uploaded via API → saved to Supabase Storage
-2. PyMuPDF (PDF) / python-docx (DOCX) extracts per-page text + embedded images
-3. Elements are chunked with semantic boundaries and overlap
-4. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
-5. SHA-256 deduplication removes identical chunks
-6. OpenAI embeds each chunk → 1536-dim vector
-7. Vectors are batch-upserted to Pinecone under the user's namespace
+1. Upload is validated (filename, extension, size cap) and accepted — `202` + a job id are
+   returned immediately; everything below runs in the background
+2. File is saved to Supabase Storage
+3. PyMuPDF (PDF) / python-docx (DOCX) extracts per-page text + embedded images; pages with
+   figures/tables are also rendered to an image (for multimodal answers later)
+4. Text is split into ~512-token chunks (64-token overlap) via `tiktoken` — predictable context
+   size and cost, independent of the source format
+5. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
+6. SHA-256 deduplication removes identical chunks
+7. OpenAI embeds each chunk → 1536-dim vector (plus a sparse lexical vector, if native hybrid is on)
+8. Vectors are upserted to Pinecone under the user's namespace; job status flips to `completed`,
+   polled via `GET /api/documents/upload-status/{job_id}`
 
 ### Querying
 
-1. If chat history exists → LLM rewrites the query to be standalone
-2. Rewritten query is embedded and searched in Pinecone (cosine similarity)
-3. Top-K results above the similarity threshold are retrieved
-4. Retrieved chunks are formatted with source labels
-5. LLM generates a grounded answer with inline citations
-6. Response streams token-by-token via SSE
+1. An exact or semantically-near-identical past question is served straight from Redis, if caching
+   is on (skips everything below)
+2. If chat history exists → LLM rewrites the query to be standalone
+3. The query is embedded once and searched in Pinecone (dense cosine, or native hybrid fusion)
+4. Cohere re-ranks the candidates down to the most relevant few
+5. Retrieved chunks are formatted with source labels (plus the page's rendered image, for chunks
+   with figures/tables)
+6. LLM generates a grounded answer with inline citations, verified against the real sources
+7. Response streams token-by-token via SSE; the answer is cached for next time
 
 ---
 
