@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from typing import Dict, Generator, List, Optional
 
 import httpx
@@ -14,6 +15,9 @@ load_dotenv()
 # a deployed backend without editing source.
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 REQUEST_TIMEOUT = 60.0
+# Part C: how long/often to poll a background ingestion job before giving up.
+_UPLOAD_POLL_INTERVAL_SECONDS = 1.5
+_UPLOAD_POLL_TIMEOUT_SECONDS = 180.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -94,14 +98,42 @@ def api_logout() -> None:
 
 
 def api_upload_document(file_bytes: bytes, filename: str, content_type: str) -> Dict:
+    """Upload a document and wait for it to finish ingesting.
+
+    Part C: the upload endpoint now returns 202 + a job id immediately —
+    ingestion (parse/embed/upsert) runs server-side in the background — so
+    this polls GET /upload-status/{job_id} until it completes or fails.
+    Raises on a failed job, or if it doesn't finish within the poll timeout.
+    """
     resp = httpx.post(
         f"{API_BASE}/api/documents/upload",
         headers=auth_headers(),
         files={"file": (filename, file_bytes, content_type)},
-        timeout=120.0,   # fast parsing ~5-10s; hi_res ~2-3 min (CPU)
+        timeout=REQUEST_TIMEOUT,
     )
     resp.raise_for_status()
-    return resp.json()
+    job_id = resp.json()["job_id"]
+
+    deadline = time.monotonic() + _UPLOAD_POLL_TIMEOUT_SECONDS
+    while True:
+        status_resp = httpx.get(
+            f"{API_BASE}/api/documents/upload-status/{job_id}",
+            headers=auth_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+        status_resp.raise_for_status()
+        job = status_resp.json()
+
+        if job["status"] == "completed":
+            return job
+        if job["status"] == "failed":
+            raise RuntimeError(job.get("error") or "Ingestion failed")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Ingestion for {filename!r} did not finish within "
+                f"{_UPLOAD_POLL_TIMEOUT_SECONDS:.0f}s"
+            )
+        time.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
 
 
 def api_list_documents() -> List[Dict]:

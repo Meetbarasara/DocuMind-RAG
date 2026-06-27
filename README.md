@@ -263,7 +263,8 @@ Base URL: `http://localhost:8000`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/documents/upload` | Upload file (multipart) → Storage + Pinecone |
+| `POST` | `/api/documents/upload` | Accept a file (multipart) → `202 {job_id, status, filename}`; ingestion (Storage + Pinecone) runs in the background |
+| `GET` | `/api/documents/upload-status/{job_id}` | Poll a background ingestion job → `{status, chunks_ingested, error}` |
 | `GET` | `/api/documents/` | List user's uploaded documents |
 | `DELETE` | `/api/documents/{filename}` | Delete from Storage + Pinecone |
 

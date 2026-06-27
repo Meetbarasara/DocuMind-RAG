@@ -1,16 +1,19 @@
 """documents.py — Document management routes for DocuMind.
 
 Endpoints:
-    POST   /api/documents/upload        — upload file, ingest, embed
-    GET    /api/documents/              — list user's documents
-    DELETE /api/documents/{filename}    — delete from storage + Pinecone
+    POST   /api/documents/upload               — accept a file, ingest in the background
+    GET    /api/documents/upload-status/{id}   — poll an ingestion job's status
+    GET    /api/documents/                     — list user's documents
+    DELETE /api/documents/{filename}           — delete from storage + Pinecone
 """
 
 import asyncio
+import uuid
 from pathlib import Path
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -33,6 +36,35 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1MB
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Part C: background ingestion job tracking
+#
+#  An in-process dict, not a queue/Celery -- this app runs as a single
+#  uvicorn process (no --workers, no separate worker service), so a plain
+#  dict is visible to every request that needs it and needs nothing extra to
+#  run. Bounded so a long-running process can't accumulate unbounded job
+#  history; oldest entries are evicted first (insertion order, plain dicts
+#  preserve it).
+# ──────────────────────────────────────────────────────────────────────────────
+
+_MAX_TRACKED_UPLOAD_JOBS = 500
+_upload_jobs: dict = {}
+
+
+def _new_upload_job(filename: str, user_id: str) -> str:
+    job_id = uuid.uuid4().hex
+    _upload_jobs[job_id] = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "status": "processing",
+        "filename": filename,
+        "chunks_ingested": None,
+        "error": None,
+    }
+    while len(_upload_jobs) > _MAX_TRACKED_UPLOAD_JOBS:
+        _upload_jobs.pop(next(iter(_upload_jobs)))
+    return job_id
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -78,16 +110,118 @@ async def _read_upload_within_limit(file: UploadFile, max_bytes: int) -> bytes:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/upload", status_code=status.HTTP_201_CREATED)
+async def _ingest_in_background(
+    job_id: str,
+    file_bytes: bytes,
+    safe_filename: str,
+    file_size: int,
+    ext: str,
+    content_type: str,
+    user_id: str,
+    db: SupabaseManager,
+    pipeline: RAGPipeline,
+) -> None:
+    """Storage upload → ingest → record metadata, with the same rollback
+    invariants as before (BUG-10) -- just running after the response (202 +
+    job id) has already gone back to the client, and reporting into
+    _upload_jobs instead of raising an HTTPException there's no longer
+    anyone listening for.
+    """
+    config = pipeline.config
+
+    # ── 1. Save to Supabase Storage ──────────────────────────────────────
+    try:
+        await asyncio.to_thread(
+            db.upload_file,
+            user_id=user_id,
+            file_bytes=file_bytes,
+            filename=safe_filename,
+            content_type=content_type,
+        )
+    except Exception as e:
+        ref = log_and_get_ref(logger, "Storage upload failed", e)
+        _upload_jobs[job_id].update(status="failed", error=f"Storage upload failed. (ref: {ref})")
+        return
+
+    # ── 2. Write to temp file for ingestion ──────────────────────────────
+    tmp_dir = Path(config.UPLOAD_DIR)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / safe_filename
+    tmp_path.write_bytes(file_bytes)
+
+    # ── 3. Ingest → embed → upsert ───────────────────────────────────────
+    try:
+        chunk_count = await asyncio.to_thread(
+            pipeline.ingest_file,
+            str(tmp_path),
+            user_id=user_id,
+            namespace=user_id,
+        )
+    except Exception as e:
+        # BUG-10 fix: ingestion failing here used to leave the storage
+        # object from step 1 orphaned — only the local temp file got
+        # cleaned up. Best-effort delete it too; a cleanup failure is
+        # logged but must not mask the original ingestion error.
+        try:
+            await asyncio.to_thread(db.delete_file, user_id=user_id, filename=safe_filename)
+        except Exception:
+            logger.warning("Cleanup after failed ingestion also failed for %s", safe_filename)
+        ref = log_and_get_ref(logger, "Ingestion failed", e)
+        _upload_jobs[job_id].update(status="failed", error=f"Ingestion failed. (ref: {ref})")
+        return
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    # ── 4. Record metadata ───────────────────────────────────────────────
+    # BUG-10 fix: this return value used to go unchecked. On failure, the
+    # storage object and Pinecone vectors from steps 1+3 would still exist
+    # with no metadata row — invisible in the UI (which lists from this
+    # table), yet still consuming quota and still answerable by chat, while
+    # the client was told success regardless.
+    upload_record = await asyncio.to_thread(
+        db.record_upload,
+        user_id=user_id,
+        filename=safe_filename,
+        file_type=ext,
+        size_bytes=file_size,
+    )
+    if not upload_record:
+        try:
+            await asyncio.to_thread(db.delete_file, user_id=user_id, filename=safe_filename)
+        except Exception:
+            logger.warning("Storage rollback after failed record_upload failed for %s", safe_filename)
+        try:
+            await asyncio.to_thread(pipeline.delete_document, filename=safe_filename, namespace=user_id)
+        except Exception:
+            logger.warning("Pinecone rollback after failed record_upload failed for %s", safe_filename)
+        ref = log_and_get_ref(
+            logger, "Failed to record upload metadata", Exception("record_upload returned None")
+        )
+        _upload_jobs[job_id].update(status="failed", error=f"Upload failed. (ref: {ref})")
+        return
+
+    _upload_jobs[job_id].update(status="completed", chunks_ingested=chunk_count)
+
+
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("10/minute")
 async def upload_document(
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
     db: SupabaseManager = Depends(get_db),
     pipeline: RAGPipeline = Depends(get_pipeline),
 ):
-    """Upload a document, store in Supabase Storage, then ingest into Pinecone."""
+    """Accept a document upload and ingest it in the background.
+
+    Part C: parse + embed + upsert can take seconds to minutes for a large
+    file. Validation (filename, extension, size cap) still happens here,
+    synchronously, so a bad upload is rejected immediately with no job
+    created — only the slow part (storage + ingest + metadata) is deferred.
+    Returns 202 + a job id; poll GET /upload-status/{job_id} for the result.
+    """
     config = pipeline.config
 
     # SEC-2: file.filename is the raw client-supplied multipart filename — it
@@ -109,98 +243,34 @@ async def upload_document(
     file_bytes = await _read_upload_within_limit(file, config.MAX_UPLOAD_SIZE_BYTES)
     file_size = len(file_bytes)
     ext = Path(safe_filename).suffix.lstrip(".").lower()
+    # Captured synchronously here (not read inside the background task) --
+    # UploadFile is tied to the request's multipart stream, which FastAPI
+    # closes once this handler returns.
+    content_type = file.content_type or "application/octet-stream"
 
-    # ── 1. Save to Supabase Storage ──────────────────────────────────────
-    try:
-        # Latency Optimization #7: db.upload_file is a blocking Supabase
-        # Storage call -- without to_thread it blocks the event loop for
-        # the whole upload, the slowest step in this route.
-        await asyncio.to_thread(
-            db.upload_file,
-            user_id=user_id,
-            file_bytes=file_bytes,
-            filename=safe_filename,
-            content_type=file.content_type or "application/octet-stream",
-        )
-    except Exception as e:
-        ref = log_and_get_ref(logger, "Storage upload failed", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Storage upload failed. (ref: {ref})",
-        )
-
-    # ── 2. Write to temp file for ingestion ──────────────────────────────
-    tmp_dir = Path(config.UPLOAD_DIR)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / safe_filename
-    tmp_path.write_bytes(file_bytes)
-
-    # ── 3. Ingest → embed → upsert ───────────────────────────────────────
-    try:
-        # Latency Optimization #7: pipeline.ingest_file does real parsing +
-        # OpenAI embedding + Pinecone upsert network calls, all blocking.
-        chunk_count = await asyncio.to_thread(
-            pipeline.ingest_file,
-            str(tmp_path),
-            user_id=user_id,
-            namespace=user_id,
-        )
-    except Exception as e:
-        # BUG-10 fix: ingestion failing here used to leave the storage
-        # object from step 1 orphaned — only the local temp file got
-        # cleaned up. Best-effort delete it too; a cleanup failure is
-        # logged but must not mask the original ingestion error.
-        try:
-            await asyncio.to_thread(db.delete_file, user_id=user_id, filename=safe_filename)
-        except Exception:
-            logger.warning("Cleanup after failed ingestion also failed for %s", safe_filename)
-        ref = log_and_get_ref(logger, "Ingestion failed", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ingestion failed. (ref: {ref})",
-        )
-    finally:
-        # Clean up temp file
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-
-    # ── 4. Record metadata ───────────────────────────────────────────────
-    # BUG-10 fix: this return value used to go unchecked. On failure, the
-    # storage object and Pinecone vectors from steps 1+3 would still exist
-    # with no metadata row — invisible in the UI (which lists from this
-    # table), yet still consuming quota and still answerable by chat,
-    # while the client was told 201 success regardless.
-    # Latency Optimization #7: db.record_upload is a blocking Supabase call.
-    upload_record = await asyncio.to_thread(
-        db.record_upload,
-        user_id=user_id,
-        filename=safe_filename,
-        file_type=ext,
-        size_bytes=file_size,
+    job_id = _new_upload_job(safe_filename, user_id)
+    background_tasks.add_task(
+        _ingest_in_background, job_id, file_bytes, safe_filename, file_size, ext, content_type,
+        user_id, db, pipeline,
     )
-    if not upload_record:
-        try:
-            await asyncio.to_thread(db.delete_file, user_id=user_id, filename=safe_filename)
-        except Exception:
-            logger.warning("Storage rollback after failed record_upload failed for %s", safe_filename)
-        try:
-            await asyncio.to_thread(pipeline.delete_document, filename=safe_filename, namespace=user_id)
-        except Exception:
-            logger.warning("Pinecone rollback after failed record_upload failed for %s", safe_filename)
-        ref = log_and_get_ref(
-            logger, "Failed to record upload metadata", Exception("record_upload returned None")
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Upload failed. (ref: {ref})",
-        )
 
-    return {
-        "message": "Document uploaded and ingested successfully",
-        "filename": safe_filename,
-        "chunks_ingested": chunk_count,
-        "size_bytes": file_size,
-    }
+    return {"job_id": job_id, "status": "processing", "filename": safe_filename}
+
+
+@router.get("/upload-status/{job_id}")
+async def get_upload_status(
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Poll a background ingestion job started by POST /upload."""
+    job = _upload_jobs.get(job_id)
+    user_id = str(current_user["user"].id)
+    # Same job_id space for everyone; scope visibility to the uploading user
+    # like every other per-user resource in this API. 404 (not 403) so an
+    # unknown id and someone else's id are indistinguishable.
+    if job is None or job["user_id"] != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown job id")
+    return {k: v for k, v in job.items() if k != "user_id"}
 
 
 @router.get("/")

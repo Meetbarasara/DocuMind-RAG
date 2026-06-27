@@ -70,10 +70,17 @@ async def test_upload_over_limit_is_rejected(client):
 
 @pytest.mark.asyncio
 async def test_upload_under_limit_still_works(client):
-    """Regression check: a normal small file is unaffected by the size cap."""
+    """Regression check: a normal small file is unaffected by the size cap.
+
+    Part C: upload now returns 202 + a job id (ingestion runs in the
+    background) rather than 201 with the final result -- accepted is enough
+    to prove the size cap didn't reject it; test_upload_rollback.py covers
+    a job actually completing.
+    """
     resp = await client.post(
         "/api/documents/upload",
         files={"file": ("small.txt", b"tiny file", "text/plain")},
     )
 
-    assert resp.status_code == 201
+    assert resp.status_code == 202
+    assert "job_id" in resp.json()

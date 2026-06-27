@@ -75,6 +75,23 @@ async def client():
         yield c
 
 
+async def _upload_and_get_final_status(client, filename="report.txt", content=b"hello"):
+    """Part C: upload now returns 202 + a job id immediately -- the actual
+    success/failure (and the rollback side effects this file tests) land on
+    the background job, observed via the status-poll endpoint. Under
+    ASGITransport (no real network boundary) the background task has
+    already run to completion by the time post() returns, so this needs no
+    retry/sleep loop -- one poll is enough."""
+    resp = await client.post(
+        "/api/documents/upload",
+        files={"file": (filename, content, "text/plain")},
+    )
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+    status_resp = await client.get(f"/api/documents/upload-status/{job_id}")
+    return status_resp.json()
+
+
 @pytest.mark.asyncio
 async def test_ingestion_failure_cleans_up_orphaned_storage_object(client, tmp_path):
     fake_db = FakeDb()
@@ -83,12 +100,9 @@ async def test_ingestion_failure_cleans_up_orphaned_storage_object(client, tmp_p
     app.dependency_overrides[get_pipeline] = lambda: fake_pipeline
     app.dependency_overrides[get_current_user] = _fake_current_user
 
-    resp = await client.post(
-        "/api/documents/upload",
-        files={"file": ("report.txt", b"hello", "text/plain")},
-    )
+    job = await _upload_and_get_final_status(client)
 
-    assert resp.status_code == 500
+    assert job["status"] == "failed"
     assert fake_db.upload_file_calls == ["report.txt"]
     assert fake_db.delete_file_calls == ["report.txt"], (
         "storage object should be cleaned up after ingestion fails, not left orphaned"
@@ -103,12 +117,9 @@ async def test_record_upload_failure_rolls_back_storage_and_pinecone(client, tmp
     app.dependency_overrides[get_pipeline] = lambda: fake_pipeline
     app.dependency_overrides[get_current_user] = _fake_current_user
 
-    resp = await client.post(
-        "/api/documents/upload",
-        files={"file": ("report.txt", b"hello", "text/plain")},
-    )
+    job = await _upload_and_get_final_status(client)
 
-    assert resp.status_code != 201, "must not report success when no metadata row got recorded"
+    assert job["status"] == "failed", "must not report success when no metadata row got recorded"
     assert fake_db.delete_file_calls == ["report.txt"], "storage object should be rolled back"
     assert fake_pipeline.delete_calls == ["report.txt"], "Pinecone vectors should be rolled back"
 
@@ -121,11 +132,8 @@ async def test_successful_upload_does_not_trigger_any_rollback(client, tmp_path)
     app.dependency_overrides[get_pipeline] = lambda: fake_pipeline
     app.dependency_overrides[get_current_user] = _fake_current_user
 
-    resp = await client.post(
-        "/api/documents/upload",
-        files={"file": ("report.txt", b"hello", "text/plain")},
-    )
+    job = await _upload_and_get_final_status(client)
 
-    assert resp.status_code == 201
+    assert job["status"] == "completed"
     assert fake_db.delete_file_calls == []
     assert fake_pipeline.delete_calls == []

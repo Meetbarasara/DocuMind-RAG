@@ -124,7 +124,10 @@ async def test_upload_traversal_filename_stays_inside_sandbox(client, fake_pipel
         files={"file": ("../escape.txt", b"malicious content", "text/plain")},
     )
 
-    assert resp.status_code == 201
+    # Part C: 202 + background ingestion -- under ASGITransport (no real
+    # network boundary) the background task still runs to completion before
+    # post() returns, so ingest_calls is already populated below.
+    assert resp.status_code == 202
     assert len(fake_pipeline.ingest_calls) == 1
     ingested_path = Path(fake_pipeline.ingest_calls[0]).resolve()
     assert ingested_path == (sandbox / "escape.txt").resolve(), (
@@ -141,7 +144,7 @@ async def test_upload_normal_filename_still_works(client, fake_pipeline, sandbox
         files={"file": ("report.pdf", b"%PDF-1.4 fake", "application/pdf")},
     )
 
-    assert resp.status_code == 201
+    assert resp.status_code == 202
     assert resp.json()["filename"] == "report.pdf"
     assert ("upload_file", "report.pdf") in fake_db.calls
 

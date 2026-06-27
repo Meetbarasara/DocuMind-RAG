@@ -399,12 +399,22 @@ Only the high-leverage items. Don't gold-plate a demo.
    genuinely env-driven, not just the few with a manual `os.getenv()` call). Files:
    `src/components/config.py`, `embeddings.py`, `retrieval.py` (A10's `os.environ` mutation also
    removed — the Pinecone key is now passed directly via `pinecone_api_key=`).
-2. **Background ingestion (or document the tradeoff):** upload currently does parse + embed +
-   upsert inside the request (wrapped in `to_thread`, so it doesn't block the loop, but the HTTP
-   call still waits seconds–minutes). For production, return `202 Accepted` + a job id and process
-   via a background task/queue; the UI polls status. **Minimum viable:** keep it synchronous but
-   document the limit and enforce the existing size cap. (Big PDFs on `fast` are seconds, so this
-   is optional for a demo — but name it as a known tradeoff.)
+2. **Background ingestion.** ✅ *Done (2026-06-27).* `POST /api/documents/upload` validates
+   (filename, extension, size cap) synchronously — a bad upload is still rejected immediately, no
+   job created — then schedules the rest (storage upload → ingest → record metadata, with the same
+   BUG-10 rollback invariants as before) via FastAPI `BackgroundTasks` and returns `202 Accepted` +
+   `{job_id, status, filename}` right away. New `GET /api/documents/upload-status/{job_id}` polls
+   the result (`processing`/`completed`/`failed`, `chunks_ingested`, `error`), scoped to the
+   uploading user (404, not 403, for someone else's job id). Job state is a bounded in-process dict
+   (`_MAX_TRACKED_UPLOAD_JOBS=500`, oldest evicted first) — no queue/Celery, consistent with the
+   single-uvicorn-process, no-`--workers` deployment shape this app actually has. Frontend
+   (`frontend/utils.py:api_upload_document`) now polls the status endpoint instead of getting an
+   immediate result; the page-level code (`frontend/pages/documents.py`) needed no changes since
+   that polling complexity is fully absorbed by the helper. Files: `src/api/router/documents.py`,
+   `frontend/utils.py`, README's endpoint table. Tests: new `tests/test_background_ingestion.py`
+   (job creation, polling, per-user isolation — verified red without the isolation check, green
+   with it — and the eviction bound); `test_upload_rollback.py`/`test_upload_size_limit.py`/
+   `test_path_traversal.py`/`test_error_leakage.py` updated for the new 202+poll contract.
 3. **Decide hybrid honestly (ties to A1/A4/B4):** either implement a **persistent sparse index**
    (Pinecone sparse vectors) so "hybrid" is real and multi-worker-safe, or go **dense-only** and
    update README/feature list. Don't ship a feature flag that silently no-ops.

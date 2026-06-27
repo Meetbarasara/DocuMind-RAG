@@ -108,6 +108,9 @@ async def test_login_failure_does_not_leak_raw_error(client):
 
 @pytest.mark.asyncio
 async def test_upload_failure_does_not_leak_raw_error(client):
+    """Part C: ingestion runs in the background now, so the failure (and any
+    leaked text) would surface via the status-poll endpoint, not the POST's
+    immediate 202 -- check both."""
     app.dependency_overrides[get_db] = lambda: FakeDbRaisingOnUpload()
     app.dependency_overrides[get_pipeline] = lambda: FakePipelineForUpload()
     app.dependency_overrides[get_current_user] = _fake_current_user
@@ -115,9 +118,13 @@ async def test_upload_failure_does_not_leak_raw_error(client):
     resp = await client.post(
         "/api/documents/upload", files={"file": ("a.txt", b"hi", "text/plain")}
     )
-
     assert _SENSITIVE not in resp.text, f"raw exception text leaked: {resp.text}"
-    assert resp.status_code == 500
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+
+    status_resp = await client.get(f"/api/documents/upload-status/{job_id}")
+    assert _SENSITIVE not in status_resp.text, f"raw exception text leaked: {status_resp.text}"
+    assert status_resp.json()["status"] == "failed"
 
 
 @pytest.mark.asyncio
