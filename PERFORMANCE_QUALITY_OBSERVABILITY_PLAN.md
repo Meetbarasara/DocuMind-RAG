@@ -211,6 +211,31 @@ with a *number*.
 **E3 — Online eval.** Sample production traces in LangSmith, score a subset for faithfulness, and
 combine with O4's human 👍/👎. Closes the loop: prod data → eval set → tuning.
 
+**E4 — The first committed baseline is WEAK — measured root cause + fix (DO NOT FORGET, 2026-06-27).**
+`data/eval/baseline.committed.json` is honest but poor: hit@k 0.44 / recall@k 0.41 / mrr 0.44,
+faithfulness 0.42, context_recall 0.28, **answer_relevancy = NaN**, refusal_rate 1.0. It's *one*
+over-conservative retrieval default cascading into every metric — not an architecture problem:
+- **`SIMILARITY_THRESHOLD = 0.5` is too high for `text-embedding-3-small`** (relevant query↔chunk
+  cosines are typically ~0.35–0.5). `_dense_retrieve` keeps `score >= 0.5`, so it silently drops
+  correct chunks — sometimes *all* of them, after which the pipeline emits the canned "I couldn't
+  find…" **for an answerable question**, which also tanks the generation metrics (same failure
+  counted twice; `context_recall 0.28` is just the retrieval miss wearing a different hat).
+- **Native hybrid is OFF** (`USE_HYBRID_SEARCH=False`), so exact-token questions (SARSA, "YOLO v3",
+  "epsilon 0.7", "$20/month", `traffic_sim.py`) get no lexical help. ⚠️ **Turning it on REQUIRES a
+  new dotproduct Pinecone index + a full re-ingest** — it will NOT work on the current cosine index.
+- **Narrow funnel**: `TOP_K=5` → 0.5 filter → `RERANKER_TOP_K=3`; the reranker only reorders, it
+  cannot recover a chunk the threshold already discarded.
+- **NOT a labeling bug**: `page_number` is 1-indexed (`ingestion.py` `enumerate(..., start=1)`) and on
+  every PDF chunk; chunking is per-page. The misses are real.
+- **`answer_relevancy = NaN` is a RAGAS-harness defect** (not the pipeline): either the false-refusal
+  answers read "noncommittal", or an embeddings/version wiring issue NaN-ing every row.
+
+**Fix path (Q4 — all A/B-able via `run_eval`):** (1) drop `SIMILARITY_THRESHOLD` to ~0.2–0.3 (or 0
+and let the reranker filter); (2) raise `TOP_K` to ~10–20; (3) **build a dotproduct index + re-ingest,
+then set `USE_HYBRID_SEARCH=true`**; (4) harden the harness — NaN-safe `answer_relevancy` + score
+generation metrics only over rows that actually retrieved context; (5) **RE-BASELINE** so the E2 gate
+guards a good number. Steps 1–2 are one-line config A/Bs run with live keys; step 4 is keyless.
+
 ---
 
 ## 4. Latency budget (so you can say where every millisecond goes)
