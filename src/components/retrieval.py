@@ -133,34 +133,47 @@ class RetrievalManager:
 
     # ── Core Retrieval ────────────────────────────────────────────────────
 
-    def _dense_retrieve(self, query: str, filename_filter: str = None) -> List[Document]:
+    def _dense_retrieve(self, query: str, filename_filter: str = None, query_vector=None) -> List[Document]:
         """Dense (vector) similarity search against Pinecone, score-filtered.
 
         Works on any index; used directly when hybrid is off and as the fallback
         if a hybrid query fails.
+
+        L4: if *query_vector* is supplied (already computed upstream for the C2
+        semantic-cache lookup), search by that vector so we don't embed the same
+        query text a second time. Falls back to text search (embed-on-demand)
+        when no vector is given.
         """
         filter_dict = {"filename": filename_filter} if filename_filter else None
-        docs_and_scores = self.vectorstore.similarity_search_with_score(
-            query, k=self.config.TOP_K, filter=filter_dict,
-        )
+        if query_vector is not None:
+            docs_and_scores = self.vectorstore.similarity_search_by_vector_with_score(
+                query_vector, k=self.config.TOP_K, filter=filter_dict,
+            )
+        else:
+            docs_and_scores = self.vectorstore.similarity_search_with_score(
+                query, k=self.config.TOP_K, filter=filter_dict,
+            )
         threshold = self.config.SIMILARITY_THRESHOLD
         return [doc for doc, score in docs_and_scores if score >= threshold]
 
-    def _hybrid_retrieve(self, query: str, filename_filter: str = None) -> List[Document]:
+    def _hybrid_retrieve(self, query: str, filename_filter: str = None, query_vector=None) -> List[Document]:
         """Pinecone *native* sparse+dense hybrid query (L1).
 
         Embeds the query (dense) + sparse-encodes it, convex-weights the two by
         ``config.HYBRID_ALPHA``, and runs a single server-side fused query
         against the dotproduct index. Falls back to dense search on any error
         (e.g. the index isn't dotproduct).
+
+        L4: reuse *query_vector* for the dense half when it was already computed
+        upstream (C2), instead of embedding the query text again here.
         """
         if not self.config.USE_HYBRID_SEARCH:
-            return self._dense_retrieve(query, filename_filter)
+            return self._dense_retrieve(query, filename_filter, query_vector)
 
         from src.components.sparse import convex_scale, encode_text
 
         try:
-            dense = self._embeddings.embed_query(query)
+            dense = query_vector if query_vector is not None else self._embeddings.embed_query(query)
             scaled_dense, scaled_sparse = convex_scale(
                 dense, encode_text(query), self.config.HYBRID_ALPHA
             )
@@ -185,18 +198,21 @@ class RetrievalManager:
             return docs
         except Exception as e:
             logger.warning("Hybrid query failed, falling back to dense: %s", e)
-            return self._dense_retrieve(query, filename_filter)
+            return self._dense_retrieve(query, filename_filter, query_vector)
 
     # ── Public Retrieval API ──────────────────────────────────────────────
 
-    def retrieve_candidates(self, query: str, filename_filter: str = None) -> List[Document]:
+    def retrieve_candidates(self, query: str, filename_filter: str = None, query_vector=None) -> List[Document]:
         """Search + dedup, deliberately WITHOUT re-ranking (BUG-6).
 
         Multi-query retrieval merges each sub-query's full candidate set, then
         re-ranks once over the union via :meth:`rerank`.
+
+        L4: *query_vector* (when set) is the embedding already computed upstream
+        and is reused instead of re-embedding *query*.
         """
         try:
-            docs = self._deduplicate_chunks(self._hybrid_retrieve(query, filename_filter))
+            docs = self._deduplicate_chunks(self._hybrid_retrieve(query, filename_filter, query_vector))
             logger.info("Retrieved %d candidate docs (threshold=%.2f)", len(docs), self.config.SIMILARITY_THRESHOLD)
             return docs
         except Exception as e:
@@ -208,9 +224,9 @@ class RetrievalManager:
         multi-query retrieval can rerank once over the merged pool (BUG-6)."""
         return self._rerank_documents(query, docs)
 
-    def retrieve(self, query: str, filename_filter: str = None) -> List[Document]:
+    def retrieve(self, query: str, filename_filter: str = None, query_vector=None) -> List[Document]:
         """Single-query retrieval: Search → Dedup → Cohere Re-rank."""
-        return self.rerank(query, self.retrieve_candidates(query, filename_filter))
+        return self.rerank(query, self.retrieve_candidates(query, filename_filter, query_vector))
 
     # ── Deletion ──────────────────────────────────────────────────────────
 

@@ -65,7 +65,7 @@ async def test_pipeline_serves_semantically_similar_query_from_cache(monkeypatch
     async def fake_rewrite(q, h=None):
         return q
 
-    async def fake_retrieve(rw, rm, filename_filter=None):
+    async def fake_retrieve(rw, rm, filename_filter=None, query_vector=None):
         calls["retrieve"] += 1
         return [Document(page_content="ctx", metadata={"filename": "f.pdf"})]
 

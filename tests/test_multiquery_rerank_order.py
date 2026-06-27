@@ -38,12 +38,12 @@ class FakeRetrievalManager:
             for i in range(self.docs_per_query)
         ]
 
-    def retrieve(self, query, filename_filter=None):
+    def retrieve(self, query, filename_filter=None, query_vector=None):
         """Old interface: simulates the bug — reranks AND truncates per sub-query."""
         self.retrieve_calls.append(query)
         return self._make_docs(query)[:_RERANKER_TOP_K]
 
-    def retrieve_candidates(self, query, filename_filter=None):
+    def retrieve_candidates(self, query, filename_filter=None, query_vector=None):
         """New interface: full candidate set, no truncation, no rerank yet."""
         self.retrieve_candidates_calls.append(query)
         return self._make_docs(query)

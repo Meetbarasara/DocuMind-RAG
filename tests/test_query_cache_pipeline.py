@@ -26,7 +26,7 @@ def _pipeline_with_fake_cache(monkeypatch):
     async def fake_rewrite(question, chat_history=None):
         return question  # no LLM call
 
-    async def fake_retrieve(rewritten, rm, filename_filter=None):
+    async def fake_retrieve(rewritten, rm, filename_filter=None, query_vector=None):
         calls["retrieve"] += 1
         return [Document(page_content="ctx", metadata={"filename": "f.pdf"})]
 

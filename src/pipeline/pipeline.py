@@ -228,6 +228,7 @@ class RAGPipeline:
         rewritten_query: str,
         retrieval_manager,
         filename_filter=None,
+        query_vector=None,
         ) -> list:
         # BUG-3 fix: generate_multi_queries is now async (it awaits the LLM
         # call instead of blocking on it) — await it here too.
@@ -237,11 +238,15 @@ class RAGPipeline:
         # BUG-6 fix: retrieve_candidates() (not retrieve()) — no per-query
         # re-ranking/truncation here, so nothing is thrown away before the
         # merge below sees every sub-query's full candidate set.
+        # L4: reuse the already-computed embedding only for the sub-query it
+        # actually belongs to (the rewritten query); any extra multi-queries are
+        # different text and still embed on demand.
         async def search_one(q):
             loop = asyncio.get_event_loop()
+            vec = query_vector if q == rewritten_query else None
             return await loop.run_in_executor(
                 None,
-                lambda: retrieval_manager.retrieve_candidates(q, filename_filter=filename_filter)
+                lambda: retrieval_manager.retrieve_candidates(q, filename_filter=filename_filter, query_vector=vec)
                 )
 
         results = await asyncio.gather(*[search_one(q) for q in queries])
@@ -313,7 +318,7 @@ class RAGPipeline:
         # Step 2: Multi-query parallel Pinecone lookups
         retrieval_manager = self._get_retrieval_manager(namespace)
         _t_retrieve = time.perf_counter()
-        docs = await self._multi_query_retrieve_async(rewritten, retrieval_manager, filename_filter)
+        docs = await self._multi_query_retrieve_async(rewritten, retrieval_manager, filename_filter, query_vector=query_vec)
         _retrieve_ms = (time.perf_counter() - _t_retrieve) * 1000
 
         if not docs:
@@ -412,7 +417,7 @@ class RAGPipeline:
 
             retrieval_manager = self._get_retrieval_manager(namespace)
             docs = await self._multi_query_retrieve_async(
-                rewritten, retrieval_manager, filename_filter
+                rewritten, retrieval_manager, filename_filter, query_vector=query_vec
             )
 
             if not docs:
