@@ -442,8 +442,18 @@ Only the high-leverage items. Don't gold-plate a demo.
    commands and both health endpoints were boot-tested directly (this sandbox has no Docker daemon
    to run an actual `docker build`/`up`, so the image build itself is unverified — flagged to the
    user to confirm on a real Docker install).
-7. **Pin what you keep, drop what you don't:** after B3, every line in `requirements.txt` should be
-   imported somewhere. Split a `[dev]`/`[eval]` extra for `pytest`, `ragas`, `datasets`, lint.
+7. **Pin what you keep, drop what you don't.** ✅ *Done (2026-06-28).* `ragas` moved out of
+   `requirements.txt` into `setup.py`'s new `extras_require["eval"]` (it's lazy-imported only by
+   `scripts/run_eval.py`, never the live app — verified no test imports it directly, and
+   `EvaluationManager` already degrades gracefully without it; `datasets` comes along transitively
+   as `ragas`'s own dependency, no separate line needed). New `extras_require["dev"]` =
+   `pytest`/`pytest-asyncio`/`fakeredis`/`ruff`/`pyflakes` — the tools actually used (confirmed
+   `pytest-mock`'s `mocker` fixture has zero call sites; left out rather than declared-but-unused).
+   `ci.yml`'s `pip install -e ".[dev]" || pip install -e .` line already anticipated this and was
+   silently falling through to the bare fallback — now resolves for real; left the file otherwise
+   untouched (CI changes deserve a closer look than a packaging-only change). Verified:
+   `pip install -e ".[dev]"` succeeds standalone (exit 0, no fallback needed), `setup.py egg_info`
+   shows the extras sectioned correctly, full suite 161 passed.
 
 ---
 

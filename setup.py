@@ -27,6 +27,20 @@ setup(
     version='0.1.0',
     packages=find_packages(),
     install_requires=get_requirements('requirements.txt'),
+    extras_require={
+        # Only scripts/run_eval.py needs this (lazy-imported, graceful fallback
+        # if absent) -- not the live API/frontend. Pulls `datasets` transitively.
+        "eval": ["ragas==0.4.3"],
+        # pytest-mock is deliberately not listed here: nothing in tests/ uses
+        # its `mocker` fixture (monkeypatch + hand-rolled fakes cover it all).
+        "dev": [
+            "pytest==9.1.1",
+            "pytest-asyncio==1.4.0",
+            "fakeredis==2.36.2",   # Redis cache tests run without a real server
+            "ruff==0.15.11",
+            "pyflakes==3.4.0",
+        ],
+    },
     description='RAG based document question answering system',
     author='Meet',
 )

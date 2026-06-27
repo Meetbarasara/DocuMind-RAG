@@ -10,7 +10,6 @@ python-docx==1.2.0           # DOCX text + image extraction
 
 streamlit==1.56.0
 python-dotenv==1.2.2
-ragas==0.4.3
 
 fastapi==0.135.2
 uvicorn[standard]==0.42.0

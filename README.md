@@ -225,6 +225,9 @@ source venv/bin/activate
 pip install -e .
 ```
 
+Running tests or linting locally? `pip install -e ".[dev]"` (pytest, ruff, pyflakes, fakeredis).
+Running the offline eval harness? `pip install -e ".[eval]"` (RAGAS — not needed for the live app).
+
 ### 2. Configure environment
 
 ```bash
