@@ -56,8 +56,6 @@ class Config(BaseSettings):
 
     # ── Generation parameters ─────────────────────────────────────────
     LLM_TEMPERATURE: float = 0.1
-    LLM_MAX_TOKENS: int = 2048
-    STREAMING: bool = True
 
     # ── Embedding parameters ──────────────────────────────────────────
     EMBEDDING_BATCH_SIZE: int = 100

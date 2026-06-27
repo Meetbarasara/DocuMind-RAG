@@ -144,18 +144,20 @@ Each: **what / where / evidence / why it matters / how to verify / fix steps.**
 
 ### 🟠 A3 (MEDIUM) — Dead config fields + README claims a feature that isn't implemented
 
-- **Where:** [config.py:39](src/components/config.py:39) `STREAMING` and
+✅ **Re-verified + fixed (2026-06-27).** `EMBEDDING_BATCH_SIZE` is **no longer dead** — this audit
+predates L1's native-hybrid upsert path (`embeddings.py` `_upsert_hybrid`), which now genuinely
+batches Pinecone upserts by this exact config value. The README's "batched upsert" / "Vectors per
+Pinecone upsert batch" claim is accurate for that path (still whatever `langchain-pinecone`
+defaults to on the plain dense `add_documents(...)` path — a narrower, real nuance, not worth a
+README caveat). **`STREAMING` was still genuinely dead** (zero reads anywhere) — deleted, along
+with `LLM_MAX_TOKENS` (same class of finding, found by the same grep while fixing this: never
+passed to `ChatOpenAI(...)`, not in the original A3 text but equally dead). Verified zero behavior
+change: suite was 161 passed before and after removal.
+
+- **Where (was):** [config.py:39](src/components/config.py:39) `STREAMING` and
   [config.py:47](src/components/config.py:47) `EMBEDDING_BATCH_SIZE`.
-- **Evidence:** grep shows neither is read anywhere in `src/` (only defined). README
-  ([README.md:99](README.md:99), [README.md:334](README.md:334)) claims *"batched upsert to
-  Pinecone"* / `EMBEDDING_BATCH_SIZE` "Vectors per Pinecone upsert batch" — but
-  `embeddings.create_vector_store` calls `vector_store.add_documents(...)` once with no batching
-  parameter. The batch size is whatever `langchain-pinecone` defaults to, not your config.
-- **Why it matters:** Interviewers read READMEs and `git grep`. A config knob that does nothing,
-  and a README claiming control you don't have, reads as "cargo-culted." Small but cheap to fix.
-- **Fix:** either (a) delete `STREAMING` + `EMBEDDING_BATCH_SIZE` and correct the README, or
-  (b) actually implement batching if you want the talking point (`add_documents` in slices of
-  `EMBEDDING_BATCH_SIZE`). Recommend (a) for slimming.
+- **Why it mattered:** Interviewers read READMEs and `git grep`. A config knob that does nothing
+  reads as "cargo-culted." Small but cheap to fix.
 
 ### 🟠 A4 (MEDIUM) — BM25 rebuild is not concurrency-safe and is O(whole namespace) per rebuild
 
