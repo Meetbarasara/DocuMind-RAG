@@ -5,6 +5,7 @@ Endpoints:
     POST /api/chat/query/stream — streaming Q&A (SSE)
 """
 
+import asyncio
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -44,6 +45,12 @@ class ChatResponse(BaseModel):
     rewritten_query: str
     num_sources_used: int
     namespace: str
+
+
+class FeedbackRequest(BaseModel):
+    run_id: str        # the trace id the stream emitted in its `meta` event
+    score: float       # 1.0 = 👍, 0.0 = 👎
+    comment: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -134,3 +141,41 @@ async def query_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/feedback", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("60/minute")
+async def feedback(
+    request: Request,
+    payload: FeedbackRequest,
+    current_user: dict = Depends(get_current_user),
+    pipeline: RAGPipeline = Depends(get_pipeline),
+):
+    """O4: record a 👍/👎 on an answer as a LangSmith feedback score.
+
+    The streaming response emits the trace's ``run_id`` (in its ``meta`` event)
+    only when tracing is on, so this attaches human feedback to that exact trace
+    — the labeled data that feeds online eval (E3). No-op when tracing is off:
+    there's no LangSmith run to score.
+    """
+    if not pipeline.config.LANGSMITH_TRACING:
+        return  # tracing disabled -> nothing to attach feedback to
+
+    try:
+        from langsmith import Client
+
+        client = Client()
+        # create_feedback is a blocking HTTP call — keep it off the event loop.
+        await asyncio.to_thread(
+            client.create_feedback,
+            payload.run_id,
+            "user_score",
+            score=payload.score,
+            comment=payload.comment,
+        )
+    except Exception as e:
+        ref = log_and_get_ref(logger, "feedback submission failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not record feedback. (ref: {ref})",
+        )

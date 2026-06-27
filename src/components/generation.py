@@ -1,11 +1,13 @@
 import json
 import logging
 import re
+from contextlib import nullcontext
 from typing import Any, Dict, List
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tracers.context import collect_runs
 from langchain_openai import ChatOpenAI
 
 from src.components.config import Config
@@ -415,31 +417,42 @@ class AnswerGeneration:
         full_answer = ""
         chat_history_str = await self._format_history(chat_history) if chat_history else ""
 
+        # O4: when tracing is on, collect this generation's LangSmith run so we
+        # can hand its run_id to the client — a later 👍/👎 attaches feedback to
+        # this exact trace. The collector shares the run_id the LangChainTracer
+        # sends to LangSmith. Tracing off => no collector, no run_id, no feedback.
+        run_id = None
+        run_cm = collect_runs() if self.config.LANGSMITH_TRACING else nullcontext()
+
         # BUG-3 fix: self.chain.stream(...) is a *sync* iterator — pulling
         # from it with a plain `for` blocks the event loop on every single
         # token, serializing every concurrent request and defeating the
         # point of SSE streaming. astream() + `async for` yields control
         # back between tokens instead.
         try:
-            if page_images:
-                # B-hybrid multimodal stream: llm.astream yields AIMessageChunks
-                # whose .content is the text delta (read it directly).
-                messages = self._multimodal_messages(context, query, chat_history_str, page_images)
-                async for chunk in self.llm.astream(messages):
-                    text = chunk.content if isinstance(chunk.content, str) else ""
-                    if text:
-                        full_answer += text
-                        yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
-            else:
-                async for chunk in self.chain.astream({
-                    "context": context,
-                    "question": query,
-                    "chat_history": chat_history_str,
-                }):
-                    # StrOutputParser's astream() always yields a str-like chunk.
-                    if chunk:
-                        full_answer += chunk
-                        yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+            with run_cm as run_collector:
+                if page_images:
+                    # B-hybrid multimodal stream: llm.astream yields AIMessageChunks
+                    # whose .content is the text delta (read it directly).
+                    messages = self._multimodal_messages(context, query, chat_history_str, page_images)
+                    async for chunk in self.llm.astream(messages):
+                        text = chunk.content if isinstance(chunk.content, str) else ""
+                        if text:
+                            full_answer += text
+                            yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
+                else:
+                    async for chunk in self.chain.astream({
+                        "context": context,
+                        "question": query,
+                        "chat_history": chat_history_str,
+                    }):
+                        # StrOutputParser's astream() always yields a str-like chunk.
+                        if chunk:
+                            full_answer += chunk
+                            yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+                # The root run is finalized once the stream is fully consumed.
+                if run_collector is not None and getattr(run_collector, "traced_runs", None):
+                    run_id = str(run_collector.traced_runs[0].id)
         except Exception as e:
             logger.error("SSE stream error: %s", e)
             yield f"data: {json.dumps({'type': 'error', 'message': 'Stream interrupted. Please try again.'})}\n\n"
@@ -457,6 +470,11 @@ class AnswerGeneration:
             capture["sources"] = sources
             if verification is not None:
                 capture["citation_verification"] = verification
+
+        # O4: surface the trace id so the client can attach 👍/👎 feedback to this
+        # exact answer. Only present when tracing is on (else nothing to score).
+        if run_id:
+            yield f"data: {json.dumps({'type': 'meta', 'run_id': run_id})}\n\n"
 
         # 4. Always signal end-of-stream so the client never hangs
         yield "data: [DONE]\n\n"

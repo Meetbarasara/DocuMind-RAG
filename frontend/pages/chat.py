@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 import streamlit as st
 
 from frontend.utils import (
+    api_feedback,
     api_list_documents,
     api_page_image,
     api_query_stream,
@@ -38,6 +39,35 @@ def _render_sources(sources: List[Dict]) -> None:
                 if img:
                     st.image(img, caption=f"📄 {fname} — page {page}", use_container_width=True)
             st.divider()
+
+
+def _submit_feedback(run_id: str, score: float) -> None:
+    """O4: POST a thumbs score, remember it, and re-render to show the ack."""
+    try:
+        api_feedback(run_id, score)
+        st.session_state.setdefault("feedback_given", {})[run_id] = score
+        st.toast("Thanks for your feedback!", icon="✅")
+    except Exception:
+        st.toast("Couldn't record feedback.", icon="⚠️")
+    st.rerun()
+
+
+def _render_feedback(run_id: Optional[str], idx: int) -> None:
+    """O4: 👍/👎 under an answer → a LangSmith feedback score on its trace.
+
+    Only shown when the answer carried a run_id (i.e. tracing is on); once rated,
+    the buttons are replaced by a small acknowledgement.
+    """
+    if not run_id:
+        return
+    if run_id in st.session_state.get("feedback_given", {}):
+        st.caption("✓ Thanks for your feedback.")
+        return
+    up, down, _ = st.columns([1, 1, 10])
+    if up.button("👍", key=f"fb_up_{idx}_{run_id}", help="Helpful"):
+        _submit_feedback(run_id, 1.0)
+    if down.button("👎", key=f"fb_down_{idx}_{run_id}", help="Not helpful"):
+        _submit_feedback(run_id, 0.0)
 
 
 def _sidebar_documents() -> Optional[str]:
@@ -88,7 +118,7 @@ def _stream_answer(
 ):
     """Stream one answer into a fresh assistant bubble.
 
-    Returns ``(full_answer, sources, interrupted)``. L5: on a mid-stream error
+    Returns ``(full_answer, sources, run_id, interrupted)``. L5: on a mid-stream error
     event or a dropped connection it stops cleanly and reports
     ``interrupted=True`` — it no longer silently re-fires a full *blocking*
     re-query (that doubled the cost of every hiccup and could hang the UI for
@@ -96,6 +126,7 @@ def _stream_answer(
     """
     sources: List[Dict] = []
     full_answer = ""
+    run_id: Optional[str] = None
     interrupted = False
 
     with st.chat_message("ai"):
@@ -108,6 +139,8 @@ def _stream_answer(
                 elif etype == "token":
                     full_answer += event.get("content", "")
                     placeholder.markdown(full_answer + "▌")
+                elif etype == "meta":
+                    run_id = event.get("run_id")   # O4: trace id for 👍/👎
                 elif etype == "error":
                     interrupted = True
                     break
@@ -123,7 +156,7 @@ def _stream_answer(
             if sources:
                 _render_sources(sources)
 
-    return full_answer, sources, interrupted
+    return full_answer, sources, run_id, interrupted
 
 
 def render_chat_page() -> None:
@@ -143,11 +176,13 @@ def render_chat_page() -> None:
             st.rerun()
 
     # ── Render existing messages ──────────────────────────────────────────
-    for msg in st.session_state.get("chat_history", []):
+    for idx, msg in enumerate(st.session_state.get("chat_history", [])):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources"):
                 _render_sources(msg["sources"])
+            if msg["role"] == "ai":
+                _render_feedback(msg.get("run_id"), idx)
 
     # ── Retry affordance for a previously interrupted answer (L5) ─────────
     # Streaming no longer silently re-fires a slow blocking query on a dropped
@@ -176,7 +211,7 @@ def render_chat_page() -> None:
         for m in st.session_state.get("chat_history", [])
     ]
 
-    full_answer, sources, interrupted = _stream_answer(prompt, history_for_api, filename_filter)
+    full_answer, sources, run_id, interrupted = _stream_answer(prompt, history_for_api, filename_filter)
 
     if interrupted:
         # Don't append a broken turn; stash the prompt and re-render so the
@@ -189,5 +224,7 @@ def render_chat_page() -> None:
         {"role": "human", "content": prompt}
     )
     st.session_state["chat_history"].append(
-        {"role": "ai", "content": full_answer, "sources": sources}
+        {"role": "ai", "content": full_answer, "sources": sources, "run_id": run_id}
     )
+    # Re-render so the just-answered turn shows its 👍/👎 affordance (O4).
+    st.rerun()

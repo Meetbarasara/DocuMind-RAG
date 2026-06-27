@@ -192,6 +192,21 @@ def api_query_stream(
                     pass
 
 
+def api_feedback(run_id: str, score: float, comment: Optional[str] = None) -> None:
+    """O4: send a 👍/👎 (score 1.0 / 0.0) for a streamed answer's trace.
+
+    Best-effort: the endpoint is a no-op when LangSmith tracing is off, so the
+    UI only calls this for answers that carried a ``run_id`` in their stream.
+    """
+    resp = httpx.post(
+        f"{API_BASE}/api/chat/feedback",
+        headers=auth_headers(),
+        json={"run_id": run_id, "score": score, "comment": comment},
+        timeout=REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 #  UI helpers
 # ──────────────────────────────────────────────────────────────────────────────
