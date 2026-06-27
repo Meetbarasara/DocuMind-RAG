@@ -1,0 +1,142 @@
+{
+  "summary": {
+    "goldset": "E:\\Desktop\\DocuMind\\data\\eval\\goldset.v1.jsonl",
+    "n": 18,
+    "retrieval": {
+      "hit@k": 0.4375,
+      "recall@k": 0.40625,
+      "mrr": 0.4375
+    },
+    "generation": {
+      "faithfulness": 0.42063492063492064,
+      "answer_relevancy": NaN,
+      "context_precision": 0.4444444444055555,
+      "context_recall": 0.2777777777777778
+    },
+    "refusal_rate": 1.0
+  },
+  "rows": [
+    {
+      "id": "q1",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q2",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q3",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q4",
+      "category": "multi-hop",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q5",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 0.5,
+      "mrr": 1.0
+    },
+    {
+      "id": "q6",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q7",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q8",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q9",
+      "category": "unanswerable",
+      "refused": true
+    },
+    {
+      "id": "q10",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q11",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q12",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q13",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q14",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q15",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q16",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q17",
+      "category": "factual",
+      "hit@k": 0.0,
+      "recall@k": 0.0,
+      "mrr": 0.0
+    },
+    {
+      "id": "q18",
+      "category": "unanswerable",
+      "refused": true
+    }
+  ]
+}
