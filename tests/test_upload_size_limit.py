@@ -13,7 +13,6 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.dependencies import get_current_user, get_db, get_pipeline
 from src.api.main import app
-from src.components.config import Config
 
 
 class FakeDb:
@@ -27,7 +26,7 @@ class FakeDb:
 class FakePipeline:
     def __init__(self, upload_dir: str):
         self.config = SimpleNamespace(
-            SUPPORTED_FILE_TYPES=Config.SUPPORTED_FILE_TYPES,
+            SUPPORTED_FILE_TYPES=("pdf", "docx", "txt"),
             UPLOAD_DIR=upload_dir,
             MAX_UPLOAD_SIZE_BYTES=1024,  # 1KB — tiny, so the test file is fast to build
         )

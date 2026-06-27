@@ -216,6 +216,9 @@ Each: **what / where / evidence / why it matters / how to verify / fix steps.**
   right, and the easiest to get caught on.
 - **Fix:** reconcile the README numbers to the actual `Config`, and either make the documented
   knobs truly env-driven (via `pydantic-settings`, see Part C) or stop claiming they are.
+  **Partially done (2026-06-27):** `Config` is now `pydantic_settings.BaseSettings`, so *every*
+  field is genuinely env-overridable (not just the few that had a manual `os.getenv()` call before)
+  — the README pass to reconcile the actual numbers/list is still open.
 
 ### 🟡 A8 (LOW) — Hybrid path depends on rank_bm25/LangChain **internal** attributes
 
@@ -239,14 +242,22 @@ Each: **what / where / evidence / why it matters / how to verify / fix steps.**
 
 ### 🟢 A10 (LOW) — Constructors mutate global `os.environ`; secrets read with no fail-fast
 
-- **Where:** `EmbeddingManager.__init__` ([embeddings.py:29](src/components/embeddings.py:29)) and
-  `RetrievalManager.__init__` ([retrieval.py:35](src/components/retrieval.py:35)) do
-  `os.environ["PINECONE_API_KEY"] = …`. `Config` reads secrets as dataclass defaults with no
-  validation ([config.py:75-84](src/components/config.py:75)); a missing key becomes `None: str`.
-- **Why it matters:** Mutating process-global env from a constructor is a surprising side effect;
-  missing-secret failures surface late with confusing errors instead of at startup.
-- **Fix:** pass the key directly to the Pinecone client instead of via env; validate required
-  settings at startup (Part C, `pydantic-settings`).
+✅ **Fixed (2026-06-27, Part C).** `Config` is now a `pydantic_settings.BaseSettings` (was a plain
+dataclass) — `OPENAI_API_KEY`/`PINECONE_API_KEY`/`SUPABASE_URL`/`SUPABASE_ANON_KEY`/
+`SUPABASE_SERVICE_ROLE_KEY` are required fields with a custom validator that also rejects a blank
+string, so `Config()` raises a clear `pydantic.ValidationError` at construction (which happens at
+import of `src.api.main`, i.e. at process startup) instead of silently becoming `None` and failing
+later inside a request. `EmbeddingManager.__init__` / `RetrievalManager.__init__` no longer mutate
+`os.environ["PINECONE_API_KEY"]` — the key is passed directly as `pinecone_api_key=` to every
+`PineconeVectorStore(...)` call site instead. Tests: `tests/test_config_fail_fast.py` (proved red
+first — both the missing-secret and the environ-mutation behavior — then green after the fix).
+
+- **Where (was):** `EmbeddingManager.__init__` ([embeddings.py:29](src/components/embeddings.py:29))
+  and `RetrievalManager.__init__` ([retrieval.py:35](src/components/retrieval.py:35)) did
+  `os.environ["PINECONE_API_KEY"] = …`. `Config` read secrets as dataclass defaults with no
+  validation; a missing key became `None: str`.
+- **Why it mattered:** Mutating process-global env from a constructor is a surprising side effect;
+  missing-secret failures surfaced late with confusing errors instead of at startup.
 
 ---
 
@@ -380,10 +391,14 @@ question to answer. Recommended dispositions (a menu — pick per how much you w
 
 Only the high-leverage items. Don't gold-plate a demo.
 
-1. **Typed settings + fail-fast secrets (replaces A10):** adopt `pydantic-settings`
-   (`BaseSettings`). Required secrets (`OPENAI_API_KEY`, `PINECONE_*`, `SUPABASE_*`) validated at
+1. **Typed settings + fail-fast secrets (replaces A10).** ✅ *Done (2026-06-27).* `Config` adopted
+   `pydantic-settings` (`BaseSettings`). Required secrets (`OPENAI_API_KEY`, `PINECONE_API_KEY`,
+   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) are validated at
    startup → the app refuses to boot misconfigured instead of failing on the first request. This
-   also makes the README's "overridable via env" claim (A7) actually true.
+   also makes the README's "overridable via env" claim (A7) actually true (every field is now
+   genuinely env-driven, not just the few with a manual `os.getenv()` call). Files:
+   `src/components/config.py`, `embeddings.py`, `retrieval.py` (A10's `os.environ` mutation also
+   removed — the Pinecone key is now passed directly via `pinecone_api_key=`).
 2. **Background ingestion (or document the tradeoff):** upload currently does parse + embed +
    upsert inside the request (wrapped in `to_thread`, so it doesn't block the loop, but the HTTP
    call still waits seconds–minutes). For production, return `202 Accepted` + a job id and process

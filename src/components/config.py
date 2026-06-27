@@ -1,19 +1,40 @@
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode
+from typing_extensions import Annotated
 
 load_dotenv()
 
 # Project root = two levels up from this file (src/components/config.py → project root)
 _PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
 
+# Part C / A10: secrets the app cannot function without. Validated at startup
+# (Config() construction, which happens at import of src.api.main) so a
+# misconfigured deployment fails immediately with a clear error instead of
+# surfacing as a confusing provider error on the first real request.
+_REQUIRED_SECRETS = (
+    "OPENAI_API_KEY",
+    "PINECONE_API_KEY",
+    "SUPABASE_URL",
+    "SUPABASE_ANON_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+)
 
-@dataclass
-class Config:
-    """Centralized configuration for the DocuMind RAG pipeline."""
+
+class Config(BaseSettings):
+    """Centralized configuration for the DocuMind RAG pipeline.
+
+    Part C / A10: a `pydantic-settings` BaseSettings (was a plain dataclass).
+    Every field below is automatically overridable by an env var of the same
+    name (read fresh on each Config() construction, including by .env via the
+    load_dotenv() above) — so the required secrets actually fail fast, and
+    every tunable knob is genuinely env-driven, not just the few that used to
+    have a manual os.getenv() call.
+    """
 
     # ── Model settings ────────────────────────────────────────────────
     EMBEDDING_MODEL_NAME: str = "text-embedding-3-small"
@@ -46,8 +67,8 @@ class Config:
     # Default OFF — it needs a dotproduct index (cosine indexes reject sparse
     # vectors). Set USE_HYBRID_SEARCH=true once you've created a dotproduct index
     # and re-ingested. HYBRID_ALPHA weights dense vs sparse (1.0 = dense only).
-    USE_HYBRID_SEARCH: bool = os.getenv("USE_HYBRID_SEARCH", "false").strip().lower() == "true"
-    HYBRID_ALPHA: float = float(os.getenv("HYBRID_ALPHA", "0.5"))
+    USE_HYBRID_SEARCH: bool = False
+    HYBRID_ALPHA: float = 0.5
 
     # Feature B: Re-ranking via Cohere Rerank API (hosted; L2)
     # L2: replaced the local sentence-transformers cross-encoder (heavy CPU +
@@ -76,17 +97,23 @@ class Config:
     MEMORY_SUMMARIZATION_WINDOW: int = 6    # summarize after this many messages
 
     # ── API keys & services ───────────────────────────────────────────
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
-    # L2: hosted reranking. Optional — without it, reranking is skipped.
-    COHERE_API_KEY: str = os.getenv("COHERE_API_KEY")
+    # Required (Part C / A10) — Config() raises at construction if any of
+    # these are missing or blank. See _validate_required_secrets below.
+    OPENAI_API_KEY: str
+    PINECONE_API_KEY: str
+    SUPABASE_URL: str
+    SUPABASE_ANON_KEY: str
+    SUPABASE_SERVICE_ROLE_KEY: str
 
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL")
-    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY")
-    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    # Optional — the rest of the codebase already degrades gracefully when
+    # these are absent (Cohere rerank skips to retrieval order, LangSmith
+    # tracing is just off), so they stay optional rather than fail-fast.
+    COHERE_API_KEY: Optional[str] = None
+    LANGSMITH_API_KEY: Optional[str] = None
+
     SUPABASE_STORAGE_BUCKET: str = "documents"
 
-    PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY")
-    PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "documind")
+    PINECONE_INDEX_NAME: str = "documind"
     PINECONE_NAMESPACE: str = ""             # must be set per-user at runtime
 
     # ── Observability: LangSmith (O1) ─────────────────────────────────
@@ -95,17 +122,16 @@ class Config:
     # langchain-core reads these straight from the environment, and the
     # load_dotenv() at the top of this module puts any .env values there.
     # Default OFF so no trace data ever leaves the process unless opted in.
-    LANGSMITH_TRACING: bool = os.getenv("LANGSMITH_TRACING", "false").strip().lower() == "true"
-    LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "documind")
-    LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY")
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_PROJECT: str = "documind"
 
     # ── Caching: Redis query cache (C1) ───────────────────────────────
     # Exact-match, per-namespace cache in front of the pipeline. Empty
     # REDIS_URL => cache disabled (fail-open no-op), so the app runs
     # unchanged until Redis is configured. Invalidated on every
     # ingest/delete so a user never gets a stale answer (C3).
-    REDIS_URL: str = os.getenv("REDIS_URL", "")
-    CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+    REDIS_URL: str = ""
+    CACHE_TTL_SECONDS: int = 3600
     # C2 semantic cache: serve a near-identical past question (cosine on the
     # query embedding) without retrieval/LLM. Scoped per namespace + filter.
     USE_SEMANTIC_CACHE: bool = True
@@ -135,11 +161,25 @@ class Config:
     API_PORT: int = 8000
     # BUG-9 fix: was a hardcoded localhost-only list — env-driven now so a
     # deployed frontend's real origin can be added without editing source.
-    CORS_ORIGINS: List[str] = field(
-        default_factory=lambda: [
-            origin.strip()
-            for origin in os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
-            if origin.strip()
-        ]
+    # NoDecode: CORS_ORIGINS is a plain comma-separated string in the env
+    # (not JSON, which is pydantic-settings' default for list-typed fields),
+    # so the validator below does the splitting itself.
+    CORS_ORIGINS: Annotated[List[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:8501"]
     )
 
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, v):
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator(*_REQUIRED_SECRETS)
+    @classmethod
+    def _required_secret_not_blank(cls, v: str, info) -> str:
+        if not v or not v.strip():
+            raise ValueError(
+                f"{info.field_name} is required — set it in your environment or .env file"
+            )
+        return v

@@ -1,4 +1,3 @@
-import os
 from typing import List
 
 from langchain_core.documents import Document
@@ -34,17 +33,18 @@ class RetrievalManager:
     def __init__(self, config: Config):
         self.config = config
 
-        if self.config.PINECONE_API_KEY:
-            os.environ["PINECONE_API_KEY"] = self.config.PINECONE_API_KEY
-
         self._embeddings = OpenAIEmbeddings(
             model=self.config.EMBEDDING_MODEL_NAME,
             openai_api_key=self.config.OPENAI_API_KEY,
         )
+        # A10: pass the key directly to the client instead of mutating the
+        # process-global os.environ — a constructor shouldn't have that kind
+        # of surprising, process-wide side effect.
         self.vectorstore = PineconeVectorStore(
             index_name=self.config.PINECONE_INDEX_NAME,
             embedding=self._embeddings,
             namespace=self.config.PINECONE_NAMESPACE,
+            pinecone_api_key=self.config.PINECONE_API_KEY,
         )
 
         # Re-ranking via Cohere Rerank API (lazy client)

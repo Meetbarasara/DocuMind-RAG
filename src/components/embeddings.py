@@ -1,5 +1,4 @@
 import hashlib
-import os
 from typing import List
 
 from langchain_core.documents import Document
@@ -23,10 +22,6 @@ class EmbeddingManager:
 
     def __init__(self, config: Config):
         self.config = config
-
-        # Expose the Pinecone key so the SDK can authenticate
-        if self.config.PINECONE_API_KEY:
-            os.environ["PINECONE_API_KEY"] = self.config.PINECONE_API_KEY
 
         # Latency Optimization #5 fix: this used to be rebuilt inside
         # create_vector_store on every call -- i.e. once per file upload --
@@ -102,6 +97,7 @@ class EmbeddingManager:
                 index_name=self.config.PINECONE_INDEX_NAME,
                 embedding=embedding_model,
                 namespace=effective_namespace,
+                pinecone_api_key=self.config.PINECONE_API_KEY,
             )
 
         try:
@@ -149,6 +145,7 @@ class EmbeddingManager:
                 index_name=self.config.PINECONE_INDEX_NAME,
                 embedding=embedding_model,
                 namespace=effective_namespace,
+                pinecone_api_key=self.config.PINECONE_API_KEY,
             )
 
             chunk_ids = [doc.metadata["chunk_id"] for doc in documents]

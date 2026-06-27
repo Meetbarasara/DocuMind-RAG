@@ -16,11 +16,17 @@ from src.exception import CustomException
 
 
 def test_missing_service_role_key_fails_fast_instead_of_falling_back_to_anon():
+    # Part C: Config itself now refuses to construct with a blank required
+    # secret (see test_config_fail_fast.py), so a blank SUPABASE_SERVICE_ROLE_KEY
+    # can no longer reach SupabaseManager via the constructor. This exercises
+    # SupabaseManager's own check as defense-in-depth against a config object
+    # that went blank after construction (e.g. a careless re-assignment).
     config = Config(
         SUPABASE_URL="https://fake.supabase.co",
         SUPABASE_ANON_KEY="anon-fake-key",
-        SUPABASE_SERVICE_ROLE_KEY="",
+        SUPABASE_SERVICE_ROLE_KEY="service-fake-key",
     )
+    config.SUPABASE_SERVICE_ROLE_KEY = ""
 
     with pytest.raises(CustomException):
         SupabaseManager(config)
