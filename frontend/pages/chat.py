@@ -178,10 +178,6 @@ def _stream_answer(
             placeholder.markdown(full_answer)
             if sources:
                 _render_sources(sources)
-            # Show 👍/👎 right here in the live bubble — no extra st.rerun needed
-            # to surface it (the stable run_id key carries over once this turn
-            # lands in history on the next interaction).
-            _render_feedback(run_id)
 
     return full_answer, sources, run_id, interrupted
 
@@ -253,8 +249,10 @@ def render_chat_page() -> None:
     st.session_state["chat_history"].append(
         {"role": "ai", "content": full_answer, "sources": sources, "run_id": run_id}
     )
-    # No st.rerun() here: the streamed answer and its 👍/👎 are already on
-    # screen, so forcing a second full re-render per question (which also
-    # re-fetched every cited page image) was pure latency + a visible blank
-    # flash. The turn re-renders from history on the next interaction, with the
-    # same run_id-keyed feedback widget.
+    # Re-render from history so the just-finished turn is committed to the
+    # conversation (and its 👍/👎 shows). Removing this — to save one re-render —
+    # was a mistake: it left finished turns rendered only as transient live
+    # bubbles, so the previous turn could vanish when the next message came in.
+    # Page images are cached per session (_cached_page_image), so the re-render
+    # is cheap.
+    st.rerun()
