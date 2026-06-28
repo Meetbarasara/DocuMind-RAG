@@ -1156,6 +1156,9 @@ The root cause is leaked *environment*, so the fix neutralizes the environment a
 ### Explain it simply (interview answer)
 My tests are meant to run sealed off, with fake keys. But the app reads a hidden settings file (`.env`) the moment it starts, and because my test folder lives *inside* the project, the test run reached up into the main project's real settings and grabbed my actual keys. One test was checking "what happens when the reranking service isn't configured?" — but with a real key present it quietly called the real service over the internet and got a real answer, so it failed, and only on my machine (the shared CI has no settings file). I made the tests blank out those few real keys before the app reads them, so the suite is sealed again: no surprise network calls, no real tracing, no accidental hits on a real database.
 
+### Follow-up (2026-06-28): the same leak, now via a feature *flag* (`USE_HYBRID_SEARCH`)
+The Part C `pydantic-settings` migration made **every** `Config` field env-overridable (not just secrets). So once native hybrid was enabled locally by setting `USE_HYBRID_SEARCH=true` in `.env`, that flag leaked into the suite the same way the secrets had — `test_embedding_model_reuse.py` started failing with `AttributeError: '_CountingOpenAIEmbeddings' object has no attribute 'embed_documents'`, because `create_vector_store` took the hybrid `_upsert_hybrid` path (which calls `embed_documents`) instead of the dense path the fake stubs. It failed only locally (CI has no `.env`) and only after hybrid was switched on. Fix: added `("USE_HYBRID_SEARCH", "false")` to the same conftest pin loop — feature flags need sealing too, not just keys. Tests that actually exercise hybrid set `Config(USE_HYBRID_SEARCH=...)` explicitly, so they're unaffected.
+
 
 ## Flaky timing tests: `_DELAY` left almost no absolute margin against OS scheduling jitter
 

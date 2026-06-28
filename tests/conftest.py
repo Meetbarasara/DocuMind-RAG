@@ -7,21 +7,26 @@ or network-dependent to stub before importing src.* anymore.)
 
 import os
 
-# Hermetic tests: don't let a developer's real .env leak live secrets in.
-# config.py calls load_dotenv() at import, and from a git worktree python-dotenv
-# walks up and finds the *parent checkout's* real .env. The shell-provided fake
-# keys (OPENAI/PINECONE/SUPABASE) override it, but anything NOT passed on the test
-# command leaks through — COHERE_API_KEY made the rerank-fallback test hit the
-# live Cohere API (returning real rankings instead of the no-client fallback),
-# LANGSMITH_* would emit real traces, and REDIS_URL would point cache tests at a
-# real server. Pin these to inert values *before* config is imported (conftest
-# runs first); setdefault so an explicit command-line value still wins for an
-# intentional live run.
+# Hermetic tests: don't let a developer's real .env leak live secrets *or
+# feature flags* in. config.py calls load_dotenv() at import, and from a git
+# worktree python-dotenv walks up and finds the *parent checkout's* real .env.
+# The shell-provided fake keys (OPENAI/PINECONE/SUPABASE) override it, but
+# anything NOT passed on the test command leaks through:
+#   - COHERE_API_KEY made the rerank-fallback test hit the live Cohere API,
+#   - LANGSMITH_* would emit real traces, REDIS_URL would point at a real server,
+#   - USE_HYBRID_SEARCH=true (set once a dev enables native hybrid locally) flips
+#     create_vector_store onto the _upsert_hybrid path, which calls embed_documents
+#     on test fakes that only stub the dense path → AttributeError. Since Part C's
+#     pydantic-settings migration made EVERY config field env-overridable, feature
+#     flags leak the same way secrets did, so they need pinning too.
+# Pin these to inert values *before* config is imported (conftest runs first);
+# setdefault so an explicit command-line value still wins for an intentional live run.
 for _var, _val in (
     ("COHERE_API_KEY", ""),
     ("LANGSMITH_API_KEY", ""),
     ("LANGSMITH_TRACING", "false"),
     ("REDIS_URL", ""),
+    ("USE_HYBRID_SEARCH", "false"),
 ):
     os.environ.setdefault(_var, _val)
 
