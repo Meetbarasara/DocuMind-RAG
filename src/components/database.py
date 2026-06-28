@@ -367,3 +367,101 @@ class SupabaseManager:
         except Exception as e:
             logger.error("delete_document_record failed: %s", e)
             return False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Chat history (conversations + messages tables)
+    #
+    #  All scoped by user_id (from the JWT) so one user can never read or write
+    #  another's conversation, even though we use the service-role client.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def create_conversation(self, user_id: str, title: str = "New chat") -> Dict:
+        """Create a new conversation for *user_id* and return its row."""
+        try:
+            result = (
+                self.service_client.table("conversations")
+                .insert({"user_id": user_id, "title": (title or "New chat")[:120]})
+                .execute()
+            )
+            return result.data[0]
+        except Exception as e:
+            logger.error("create_conversation failed: %s", e)
+            raise CustomException(f"Could not create conversation: {e}") from e
+
+    def list_conversations(self, user_id: str) -> List[Dict]:
+        """Return *user_id*'s conversations, most-recently-updated first."""
+        try:
+            result = (
+                self.service_client.table("conversations")
+                .select("id, title, updated_at")
+                .eq("user_id", user_id)
+                .order("updated_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error("list_conversations failed: %s", e)
+            return []
+
+    def get_conversation_messages(self, user_id: str, conversation_id: str) -> List[Dict]:
+        """Return the messages of *conversation_id*, oldest first.
+
+        Scoped by ``user_id`` too, so a guessed/forged conversation id belonging
+        to another user returns nothing.
+        """
+        try:
+            result = (
+                self.service_client.table("messages")
+                .select("role, content, sources, run_id, created_at")
+                .eq("conversation_id", conversation_id)
+                .eq("user_id", user_id)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error("get_conversation_messages failed: %s", e)
+            return []
+
+    def add_message(
+        self,
+        user_id: str,
+        conversation_id: str,
+        role: str,
+        content: str,
+        sources: Optional[List] = None,
+        run_id: Optional[str] = None,
+    ) -> Dict:
+        """Append a message to a conversation and bump its ``updated_at``."""
+        try:
+            result = (
+                self.service_client.table("messages")
+                .insert({
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "role": role,
+                    "content": content,
+                    "sources": sources,
+                    "run_id": run_id,
+                })
+                .execute()
+            )
+            # Touch the parent so the sidebar orders by latest activity.
+            self.service_client.table("conversations").update(
+                {"updated_at": datetime.now(UTC).isoformat()}
+            ).match({"id": conversation_id, "user_id": user_id}).execute()
+            return result.data[0]
+        except Exception as e:
+            logger.error("add_message failed: %s", e)
+            raise CustomException(f"Could not save message: {e}") from e
+
+    def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
+        """Delete a conversation (its messages cascade) owned by *user_id*."""
+        try:
+            self.service_client.table("conversations").delete().match(
+                {"id": conversation_id, "user_id": user_id}
+            ).execute()
+            return True
+        except Exception as e:
+            logger.error("delete_conversation failed: %s", e)
+            return False

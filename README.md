@@ -319,6 +319,16 @@ Base URL: `http://localhost:8000`
 | `POST` | `/api/chat/query/stream` | Streaming Q&A (SSE) → token-by-token, plus a `meta` event with a LangSmith `run_id` when tracing is on |
 | `POST` | `/api/chat/feedback` | Record a 👍/👎 (`{run_id, score}`) as a LangSmith feedback score; no-op when tracing is off |
 
+### Conversations (persistent chat history)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/conversations` | Start a new conversation → `{id, title}` |
+| `GET` | `/api/conversations` | List the user's conversations (most-recent first) |
+| `GET` | `/api/conversations/{id}/messages` | Load a conversation's messages |
+| `POST` | `/api/conversations/{id}/messages` | Append a message (`{role, content, sources?, run_id?}`) |
+| `DELETE` | `/api/conversations/{id}` | Delete a conversation (messages cascade) |
+
 > **Evaluation isn't a live endpoint.** It's an offline harness (`scripts/run_eval.py`) over a
 > versioned gold set (`data/eval/`) — retrieval metrics (Hit@k/Recall@k/MRR) + RAGAS generation
 > metrics + a refusal-rate check, with a CI gate that fails the build on a regression against the
