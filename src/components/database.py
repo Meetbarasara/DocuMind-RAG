@@ -104,6 +104,28 @@ class SupabaseManager:
             logger.error("sign_in failed for %s: %s", email, e)
             raise CustomException(f"Sign-in failed: {e}") from e
 
+    def refresh_session(self, refresh_token: str) -> Dict:
+        """Exchange a refresh token for a fresh access+refresh token pair.
+
+        Supabase access tokens are short-lived (~1h). Without this, a session
+        silently dies mid-use once the access token expires; the frontend uses
+        this to renew transparently instead of bouncing the user to login.
+
+        Returns:
+            Dict with ``user``, ``access_token``, and ``refresh_token``.
+        """
+        try:
+            response = self.client.auth.refresh_session(refresh_token)
+            logger.info("refresh_session: session renewed")
+            return {
+                "user": response.user,
+                "access_token": response.session.access_token,
+                "refresh_token": response.session.refresh_token,
+            }
+        except Exception as e:
+            logger.warning("refresh_session failed: %s", e)
+            raise CustomException(f"Session refresh failed: {e}") from e
+
     def get_current_user(self, access_token: str) -> Optional[Dict]:
         """Validate a JWT and return the user payload, or *None* if invalid."""
         try:

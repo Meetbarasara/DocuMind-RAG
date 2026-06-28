@@ -295,7 +295,8 @@ Base URL: `http://localhost:8000`
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/auth/signup` | Create account (`email`, `password`) |
-| `POST` | `/api/auth/login` | Sign in → returns `access_token` |
+| `POST` | `/api/auth/login` | Sign in → returns `access_token` + `refresh_token` |
+| `POST` | `/api/auth/refresh` | Exchange a `refresh_token` for a fresh token pair (renew an expiring session) |
 | `POST` | `/api/auth/logout` | Invalidate session |
 | `GET` | `/api/auth/me` | Get current user info |
 

@@ -33,6 +33,10 @@ class AuthRequest(BaseModel):
     password: str
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
 class AuthResponse(BaseModel):
     message: str
     user_id: str
@@ -97,6 +101,35 @@ async def login(request: Request, payload: AuthRequest, db: SupabaseManager = De
     user = result.get("user")
     return AuthResponse(
         message="Login successful",
+        user_id=str(user.id),
+        email=user.email,
+        access_token=result.get("access_token"),
+        refresh_token=result.get("refresh_token"),
+    )
+
+
+@router.post("/refresh", response_model=AuthResponse)
+@limiter.limit("30/minute")
+async def refresh(request: Request, payload: RefreshRequest, db: SupabaseManager = Depends(get_db)):
+    """Exchange a refresh token for a fresh access+refresh token pair.
+
+    Lets the frontend renew a session whose short-lived access token has
+    expired, instead of forcing a re-login. A failure here means the refresh
+    token itself is invalid/expired → the client should send the user to login.
+    """
+    try:
+        # Latency Optimization #7: db.refresh_session is a blocking Supabase call.
+        result = await asyncio.to_thread(db.refresh_session, payload.refresh_token)
+    except Exception as e:
+        ref = log_and_get_ref(logger, "Token refresh failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Session expired. Please sign in again. (ref: {ref})",
+        )
+
+    user = result.get("user")
+    return AuthResponse(
+        message="Session refreshed",
         user_id=str(user.id),
         email=user.email,
         access_token=result.get("access_token"),
