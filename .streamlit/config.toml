@@ -1,0 +1,11 @@
+# Streamlit project config.
+#
+# showSidebarNavigation = false:
+#   frontend/pages/ sits next to the entrypoint (frontend/app.py), so Streamlit's
+#   native multipage feature auto-lists chat.py/documents.py/login.py as sidebar
+#   nav entries. But those modules only DEFINE render_* functions (they're called
+#   by app.py's own radio nav), so clicking the auto-generated entries runs them
+#   as standalone scripts and renders a blank page. We drive navigation ourselves
+#   from app.py, so hide Streamlit's auto nav.
+[client]
+showSidebarNavigation = false

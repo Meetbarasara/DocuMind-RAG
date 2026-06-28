@@ -17,6 +17,22 @@ from frontend.utils import (
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _cached_page_image(filename: str, page) -> Optional[bytes]:
+    """Fetch a page snapshot once per session, then reuse it.
+
+    Streamlit re-runs the whole script (and executes collapsed expanders) on
+    every interaction, so without this each rerun re-fetched every cited page
+    image over HTTP — visible latency on every question. Cached in per-session
+    state, NOT @st.cache_data (which is shared across users and could serve one
+    user's page image to another who happens to have a same-named file).
+    """
+    cache = st.session_state.setdefault("_page_image_cache", {})
+    key = f"{filename}::{page}"
+    if key not in cache:
+        cache[key] = api_page_image(filename, page)
+    return cache[key]
+
+
 def _render_sources(sources: List[Dict]) -> None:
     """Render an expandable citations section below an answer."""
     if not sources:
@@ -35,7 +51,7 @@ def _render_sources(sources: List[Dict]) -> None:
                 st.caption(f"> {snippet[:300]}…" if len(snippet) > 300 else f"> {snippet}")
             # B-hybrid: show the actual rendered page the multimodal answer read from.
             if s.get("has_visual"):
-                img = api_page_image(fname, page)
+                img = _cached_page_image(fname, page)
                 if img:
                     st.image(img, caption=f"📄 {fname} — page {page}", use_container_width=True)
             st.divider()
@@ -52,11 +68,14 @@ def _submit_feedback(run_id: str, score: float) -> None:
     st.rerun()
 
 
-def _render_feedback(run_id: Optional[str], idx: int) -> None:
+def _render_feedback(run_id: Optional[str]) -> None:
     """O4: 👍/👎 under an answer → a LangSmith feedback score on its trace.
 
     Only shown when the answer carried a run_id (i.e. tracing is on); once rated,
-    the buttons are replaced by a small acknowledgement.
+    the buttons are replaced by a small acknowledgement. Keyed on the run_id
+    alone (not the history index) so the SAME widget identity is used whether
+    this turn is rendered live or later from history — a click while it's still
+    the live bubble isn't lost when it moves into history.
     """
     if not run_id:
         return
@@ -64,9 +83,9 @@ def _render_feedback(run_id: Optional[str], idx: int) -> None:
         st.caption("✓ Thanks for your feedback.")
         return
     up, down, _ = st.columns([1, 1, 10])
-    if up.button("👍", key=f"fb_up_{idx}_{run_id}", help="Helpful"):
+    if up.button("👍", key=f"fb_up_{run_id}", help="Helpful"):
         _submit_feedback(run_id, 1.0)
-    if down.button("👎", key=f"fb_down_{idx}_{run_id}", help="Not helpful"):
+    if down.button("👎", key=f"fb_down_{run_id}", help="Not helpful"):
         _submit_feedback(run_id, 0.0)
 
 
@@ -155,6 +174,10 @@ def _stream_answer(
             placeholder.markdown(full_answer)
             if sources:
                 _render_sources(sources)
+            # Show 👍/👎 right here in the live bubble — no extra st.rerun needed
+            # to surface it (the stable run_id key carries over once this turn
+            # lands in history on the next interaction).
+            _render_feedback(run_id)
 
     return full_answer, sources, run_id, interrupted
 
@@ -176,13 +199,13 @@ def render_chat_page() -> None:
             st.rerun()
 
     # ── Render existing messages ──────────────────────────────────────────
-    for idx, msg in enumerate(st.session_state.get("chat_history", [])):
+    for msg in st.session_state.get("chat_history", []):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources"):
                 _render_sources(msg["sources"])
             if msg["role"] == "ai":
-                _render_feedback(msg.get("run_id"), idx)
+                _render_feedback(msg.get("run_id"))
 
     # ── Retry affordance for a previously interrupted answer (L5) ─────────
     # Streaming no longer silently re-fires a slow blocking query on a dropped
@@ -226,5 +249,8 @@ def render_chat_page() -> None:
     st.session_state["chat_history"].append(
         {"role": "ai", "content": full_answer, "sources": sources, "run_id": run_id}
     )
-    # Re-render so the just-answered turn shows its 👍/👎 affordance (O4).
-    st.rerun()
+    # No st.rerun() here: the streamed answer and its 👍/👎 are already on
+    # screen, so forcing a second full re-render per question (which also
+    # re-fetched every cited page image) was pure latency + a visible blank
+    # flash. The turn re-renders from history on the next interaction, with the
+    # same run_id-keyed feedback widget.
