@@ -150,6 +150,10 @@ def _stream_answer(
 
     with st.chat_message("ai"):
         placeholder = st.empty()
+        # Until the first token arrives (rewrite → retrieve → rerank → first
+        # token can be a few seconds), show a thinking indicator so the bubble
+        # isn't just an empty void.
+        placeholder.markdown("🤔 _Thinking…_")
         try:
             for event in api_query_stream(prompt, history_for_api, filename_filter):
                 etype = event.get("type")
