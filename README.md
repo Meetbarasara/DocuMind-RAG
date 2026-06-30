@@ -391,10 +391,10 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
 | `LLM_MODEL_NAME` | `llama-3.3-70b-versatile` | Groq-hosted chat model |
 | `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
 | `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
-| `TOP_K` | `5` | Chunks retrieved per query |
+| `TOP_K` | `10` | Candidate pool retrieved per query (eval-tuned) |
 | `SIMILARITY_THRESHOLD` | `0.50` | Min cosine score to keep |
 | `LLM_TEMPERATURE` | `0.1` | LLM creativity (lower = more factual) |
-| `RERANKER_TOP_K` | `3` | Chunks kept after Cohere rerank |
+| `RERANKER_TOP_K` | `5` | Chunks kept after Cohere rerank (eval-tuned: hit@k 0.875→1.0) |
 | `EMBEDDING_BATCH_SIZE` | `100` | Vectors per Pinecone upsert batch (native-hybrid upsert path) |
 | `MAX_UPLOAD_SIZE_BYTES` | `50MB` | Upload size cap, enforced before buffering the file |
 | `API_PORT` | `8000` | FastAPI server port |

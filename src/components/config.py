@@ -52,7 +52,11 @@ class Config(BaseSettings):
     CHUNK_OVERLAP_TOKENS: int = 64
 
     # ── Retrieval parameters ──────────────────────────────────────────
-    TOP_K: int = 5
+    # TOP_K=10 (candidate pool for the reranker). Eval-tuned: on goldset.v1 the
+    # relevant chunk for several Qs ranked 4th–5th, so a top-5 pool + top-3 rerank
+    # dropped them. Widening to 10 candidates + keeping 5 after rerank took
+    # retrieval hit@k 0.875 → 1.000 (see scripts/run_eval --retrieval-only).
+    TOP_K: int = 10
     SIMILARITY_THRESHOLD: float = 0.50
     # Latency Optimization #6: bounds RAGPipeline's per-namespace
     # RetrievalManager cache (LRU-evicted) so it can't grow unbounded as
@@ -79,7 +83,7 @@ class Config(BaseSettings):
     # absent, reranking degrades gracefully to retrieval order (see retrieval.py).
     USE_RERANKING: bool = True
     COHERE_RERANK_MODEL: str = "rerank-v3.5"
-    RERANKER_TOP_K: int = 3                 # keep top N after re-ranking
+    RERANKER_TOP_K: int = 5                 # keep top N after re-ranking (eval-tuned, see TOP_K)
 
     # Feature C: Multi-Query Retrieval
     # L3: OFF by default — it adds an LLM round-trip + N extra retrievals to the
