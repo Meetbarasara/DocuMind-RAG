@@ -10,7 +10,7 @@ import os
 # Hermetic tests: don't let a developer's real .env leak live secrets *or
 # feature flags* in. config.py calls load_dotenv() at import, and from a git
 # worktree python-dotenv walks up and finds the *parent checkout's* real .env.
-# The shell-provided fake keys (OPENAI/PINECONE/SUPABASE) override it, but
+# The shell-provided fake keys (GROQ/PINECONE/SUPABASE) override it, but
 # anything NOT passed on the test command leaks through:
 #   - COHERE_API_KEY made the rerank-fallback test hit the live Cohere API,
 #   - LANGSMITH_* would emit real traces, REDIS_URL would point at a real server,
@@ -31,6 +31,34 @@ for _var, _val in (
     os.environ.setdefault(_var, _val)
 
 import pytest  # noqa: E402  (must follow the env pinning above)
+
+
+class _FakeLocalEmbeddings:
+    """Stands in for HuggingFaceEmbeddings so tests never load the real ~420MB
+    sentence-transformers model (slow, RAM-heavy, needs a one-time network
+    download). Embeddings are now LOCAL, so constructing EmbeddingManager /
+    RetrievalManager / RAGPipeline for real would otherwise load the model.
+    Tests that care about actual vectors set their own `_embeddings` fake."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def embed_query(self, text):
+        return [0.0] * 768
+
+    def embed_documents(self, texts):
+        return [[0.0] * 768 for _ in texts]
+
+
+@pytest.fixture(autouse=True)
+def _stub_local_embeddings(monkeypatch):
+    """Replace HuggingFaceEmbeddings in both modules that construct it, before any
+    test builds a real manager. A test may still override with its own fake."""
+    import src.components.embeddings as _emb
+    import src.components.retrieval as _ret
+
+    monkeypatch.setattr(_emb, "HuggingFaceEmbeddings", _FakeLocalEmbeddings)
+    monkeypatch.setattr(_ret, "HuggingFaceEmbeddings", _FakeLocalEmbeddings)
 
 
 @pytest.fixture(autouse=True)

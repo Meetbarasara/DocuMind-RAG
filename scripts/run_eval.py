@@ -5,7 +5,7 @@ Runs the pipeline over a versioned gold set and reports BOTH layers:
   - Generation: RAGAS faithfulness / answer_relevancy / context_precision / recall
   - Unanswerable: refusal rate on the negative rows
 
-This needs real GOOGLE_API_KEY + PINECONE_API_KEY (it ingests the source doc and
+This needs real GROQ_API_KEY + PINECONE_API_KEY (it ingests the source doc and
 makes LLM calls), so it's an offline script you run on demand — NOT a unit test.
 It saves a baseline JSON so future runs can be compared (the basis for a CI
 regression gate, Pillar E2).

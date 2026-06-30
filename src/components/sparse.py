@@ -1,6 +1,6 @@
 """sparse.py — stateless sparse (lexical) encoder for Pinecone native hybrid (L1).
 
-Pinecone native hybrid fuses a DENSE vector (Gemini embedding) with a SPARSE
+Pinecone native hybrid fuses a DENSE vector (local sentence-transformers embedding) with a SPARSE
 keyword vector *server-side*, in one dotproduct index — so there is no
 in-process BM25 index to rebuild or hold in RAM (the failing of the old local
 hybrid: per-process, rebuilt from the whole namespace on the first query after

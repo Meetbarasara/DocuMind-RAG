@@ -10,7 +10,8 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.42+-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Pinecone](https://img.shields.io/badge/Pinecone-Vector_DB-000000?style=flat&logo=pinecone&logoColor=white)](https://pinecone.io)
-[![Gemini](https://img.shields.io/badge/Gemini-2.0_Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
+[![Groq](https://img.shields.io/badge/Groq-Llama_3.3_70B-F55036?style=flat&logo=groq&logoColor=white)](https://groq.com)
+[![Embeddings](https://img.shields.io/badge/Embeddings-local_all--mpnet-FFD21E?style=flat&logo=huggingface&logoColor=black)](https://huggingface.co/sentence-transformers/all-mpnet-base-v2)
 [![Supabase](https://img.shields.io/badge/Supabase-Auth_+_Storage-3ECF8E?style=flat&logo=supabase&logoColor=white)](https://supabase.io)
 [![CI](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -52,7 +53,7 @@ Every answer is:
                          │                  │
                 ┌────────▼──────────────────▼────────┐
                 │          External Services          │
-                │  Pinecone (vectors) · Gemini (LLM)  │
+                │  Pinecone (vectors) · Groq (LLM)    │
                 │  + optional: Cohere (rerank) ·       │
                 │    Redis (cache) · LangSmith (trace) │
                 └────────────────────────────────────┘
@@ -73,7 +74,7 @@ Document Upload
  [Chunking]   ── 512 tiktoken tokens ──▶  LangChain Documents with metadata
       │
       ▼
- [Embedding]  ── text-embedding-004 ──▶  768-dim vectors (+ sparse, if hybrid is on)
+ [Embedding]  ── all-mpnet-base-v2 (local) ──▶  768-dim vectors (+ sparse, if hybrid is on)
       │
       ▼
  [Pinecone]   ── namespace = user_id ──▶  Per-user vector isolation; job → completed
@@ -84,7 +85,7 @@ User Question
  [Cache?]     ── Redis exact/semantic match ──▶  HIT: answer in ms, skip everything below
       │ MISS
       ▼
- [Rewrite]    ── gemini-2.0-flash ──▶  Standalone query (resolves pronouns)
+ [Rewrite]    ── Llama-3.3-70B (Groq) ──▶  Standalone query (resolves pronouns)
       │
       ▼
  [Retrieve]   ── dense cosine, or native hybrid ──▶  Top-K candidates above threshold
@@ -93,7 +94,7 @@ User Question
  [Rerank]     ── Cohere Rerank API ──▶  Most relevant few, reordered
       │
       ▼
- [Generate]   ── gemini-2.0-flash (+ page image, if visual) ──▶  Grounded, cited answer
+ [Generate]   ── Llama-3.3-70B (Groq) ──▶  Grounded, cited answer
       │
       ▼
  SSE Stream ──▶  Token-by-token to UI; cache the answer; 👍/👎 → LangSmith
@@ -127,8 +128,8 @@ User Question
 
 | Layer | Technology |
 |---|---|
-| **LLM** | Google `gemini-2.0-flash` (multimodal for page-image answers) |
-| **Embeddings** | Google `gemini-embedding-001` (768-dim via Matryoshka) |
+| **LLM** | Groq `llama-3.3-70b-versatile` (hosted, generous free tier) |
+| **Embeddings** | Local `sentence-transformers/all-mpnet-base-v2` (768-dim, CPU, no API/quota) |
 | **Vector DB** | Pinecone (serverless; cosine, or dotproduct for native hybrid) |
 | **Re-ranking** | Cohere Rerank API (optional) |
 | **Caching** | Redis (optional — exact-match + semantic) |
@@ -153,7 +154,7 @@ DocuMind/
 │   ├── components/
 │   │   ├── config.py          # pydantic-settings: typed, fail-fast, env-driven config
 │   │   ├── ingestion.py       # Document parsing & token-based chunking
-│   │   ├── embeddings.py      # Gemini embed + Pinecone upsert (dense or native hybrid)
+│   │   ├── embeddings.py      # local sentence-transformers embed + Pinecone upsert (dense or native hybrid)
 │   │   ├── retrieval.py       # Dense/hybrid search + Cohere re-rank
 │   │   ├── sparse.py          # Stateless lexical encoder for native hybrid (no extra dep)
 │   │   ├── generation.py      # Query rewriting + LLM generation + SSE + feedback run_id
@@ -202,11 +203,12 @@ DocuMind/
 ### Prerequisites
 
 - Python 3.11+ (or Docker, if you'd rather skip the venv — see step 4)
-- [Google Gemini API key](https://aistudio.google.com/apikey)
+- [Groq API key](https://console.groq.com/keys) — free, powers the LLM. (Embeddings run locally,
+  so there's no embedding API key to get.)
 - [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `768`,
   metric: `cosine`). Native hybrid search (off by default) needs a *second*, `dotproduct` index instead.
-  (`gemini-embedding-001` is requested at 768-dim via Matryoshka truncation — a 1536-dim index left
-  over from the OpenAI setup will reject these vectors, so re-create at 768 and re-ingest documents.)
+  (The local `all-mpnet-base-v2` embedding model is 768-dim — if you have a 1536-dim index left over
+  from an OpenAI setup, re-create it at 768. The first run downloads the model, ~420MB, to your HF cache.)
 - [Supabase project](https://supabase.com) — free tier works fine
 
 ### 1. Clone & install
@@ -239,7 +241,7 @@ cp .env.example .env
 Edit `.env` with your credentials:
 
 ```env
-GOOGLE_API_KEY=AIza...
+GROQ_API_KEY=gsk_...
 PINECONE_API_KEY=pcsk_...
 PINECONE_INDEX_NAME=documind
 SUPABASE_URL=https://<project-ref>.supabase.co
@@ -283,7 +285,7 @@ streamlit run frontend/app.py
 ```
 
 Open **http://localhost:8501** in your browser. `Config`'s fail-fast validation means the app
-refuses to boot if a required secret (`GOOGLE_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_*`) is
+refuses to boot if a required secret (`GROQ_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_*`) is
 missing or blank — check the startup error if it doesn't come up.
 
 ---
@@ -378,16 +380,15 @@ Interactive docs: **http://localhost:8000/docs**
 ## Configuration Reference
 
 All settings live in `src/components/config.py` (`pydantic-settings`) and are overridable via
-`.env` — the five required secrets (`GOOGLE_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`,
+`.env` — the five required secrets (`GROQ_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`,
 `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) fail fast at startup if missing or blank.
 
 **Core**
 
 | Setting | Default | Description |
 |---|---|---|
-| `EMBEDDING_MODEL_NAME` | `gemini-embedding-001` | Gemini embedding model (v1beta-compatible) |
-| `EMBEDDING_DIMENSIONS` | `768` | Output dim (Matryoshka); Pinecone index must match |
-| `LLM_MODEL_NAME` | `gemini-2.0-flash` | Gemini chat model |
+| `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-mpnet-base-v2` | Local embedding model (768-dim, CPU) |
+| `LLM_MODEL_NAME` | `llama-3.3-70b-versatile` | Groq-hosted chat model |
 | `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
 | `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
 | `TOP_K` | `5` | Chunks retrieved per query |
@@ -407,7 +408,7 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
 | `REDIS_URL` | unset | Exact-match query cache — unset disables it (fail-open no-op) |
 | `USE_SEMANTIC_CACHE` | `true` | Serve a near-identical past question (cosine on its embedding); needs `REDIS_URL` |
 | `LANGSMITH_TRACING` | `false` | Trace every chain to LangSmith — needs `LANGSMITH_API_KEY` |
-| `USE_IMAGE_ANSWERING` | `true` | Render PDF pages with figures/tables and answer over the page image |
+| `USE_IMAGE_ANSWERING` | `false` | Render PDF pages with figures/tables and answer over the page image — needs a vision-capable LLM (Groq Llama-3.3-70B is text-only) |
 | `USE_CITATION_VERIFICATION` | `true` | Flag whether each `[Source: ...]` citation names a real retrieved file |
 
 ---
@@ -425,7 +426,7 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
    size and cost, independent of the source format
 5. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
 6. SHA-256 deduplication removes identical chunks
-7. Gemini embeds each chunk → 768-dim vector via gemini-embedding-001 (+ sparse, if native hybrid is on)
+7. A local sentence-transformers model embeds each chunk → 768-dim vector (+ sparse, if native hybrid is on)
 8. Vectors are upserted to Pinecone under the user's namespace; job status flips to `completed`,
    polled via `GET /api/documents/upload-status/{job_id}`
 

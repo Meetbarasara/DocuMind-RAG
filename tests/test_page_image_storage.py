@@ -27,7 +27,9 @@ class _FakeDB:
 
 
 def test_ingest_stores_a_snapshot_for_each_visual_page(monkeypatch, tmp_path):
-    p = RAGPipeline(Config(), db=_FakeDB())
+    # USE_IMAGE_ANSWERING defaults off now (Groq Llama is text-only); this test
+    # exercises the snapshot-storage feature, so opt in explicitly.
+    p = RAGPipeline(Config(USE_IMAGE_ANSWERING=True), db=_FakeDB())
 
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"%PDF-1.4 stub")
@@ -52,7 +54,7 @@ def test_ingest_stores_a_snapshot_for_each_visual_page(monkeypatch, tmp_path):
 
 
 def test_no_db_means_no_storage_attempt(monkeypatch, tmp_path):
-    p = RAGPipeline(Config(), db=None)  # e.g. unit context
+    p = RAGPipeline(Config(USE_IMAGE_ANSWERING=True), db=None)  # e.g. unit context
 
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"%PDF-1.4 stub")

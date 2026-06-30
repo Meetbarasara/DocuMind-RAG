@@ -1,14 +1,14 @@
 name: Eval (nightly regression gate)
 
-# RAG eval is costly (real Gemini + Pinecone + RAGAS calls), so it runs on a
+# RAG eval is costly (real Groq + Pinecone + RAGAS calls), so it runs on a
 # schedule / on demand — NOT on every push or PR. The gate fails the run if a
 # metric drops past tolerance vs the committed baseline.
 #
-# The RAGAS judge LLM + embeddings are wired to Gemini (see evalution.py), so the
-# whole eval runs on GOOGLE_API_KEY — no OpenAI key needed.
+# The RAGAS judge LLM is wired to Groq and embeddings run locally (see
+# evalution.py), so the eval runs on GROQ_API_KEY — no OpenAI/Gemini key needed.
 #
 # Prerequisites (set once):
-#   1. Repo secrets: GOOGLE_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME,
+#   1. Repo secrets: GROQ_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME,
 #      and (optional) COHERE_API_KEY.
 #   2. A reference baseline: run `python -m scripts.run_eval` locally with a good
 #      config, then commit its data/eval/baseline.json as
@@ -24,7 +24,7 @@ jobs:
     name: RAG eval regression gate
     runs-on: ubuntu-latest
     env:
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
       PINECONE_INDEX_NAME: ${{ secrets.PINECONE_INDEX_NAME }}
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}

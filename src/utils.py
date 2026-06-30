@@ -67,7 +67,7 @@ def _summarize_older_messages(messages: list, llm: Any) -> str:
 
     Args:
         messages: The older messages to summarize.
-        llm:      A LangChain LLM instance (e.g. ``ChatGoogleGenerativeAI``).
+        llm:      A LangChain LLM instance (e.g. ``ChatGroq``).
 
     Returns:
         A concise summary string, or ``""`` on failure.

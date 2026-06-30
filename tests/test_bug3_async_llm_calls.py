@@ -104,7 +104,7 @@ async def test_generate_multi_queries_does_not_block_event_loop(generator, monke
     timing assertion is even reached. That's still a legitimate failure: the
     function isn't awaitable yet, which is exactly the bug.
 
-    Patches ChatGoogleGenerativeAI.invoke/.ainvoke on the *class* (via monkeypatch,
+    Patches ChatGroq.invoke/.ainvoke on the *class* (via monkeypatch,
     so it's reverted after the test) rather than the instance — the chat model is a
     Pydantic model and rejects `instance.invoke = ...` with a ValueError
     ("no field 'invoke'") since that's not a declared field.

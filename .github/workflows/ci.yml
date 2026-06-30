@@ -40,7 +40,7 @@ jobs:
     env:
       # Fake keys so modules that read Config() at import time don't crash.
       # Real secrets are NOT needed for unit tests (all external calls are mocked).
-      GOOGLE_API_KEY: AIza-fake-gemini-key-for-ci
+      GROQ_API_KEY: gsk-fake-groq-key-for-ci
       PINECONE_API_KEY: fake-pinecone-key
       PINECONE_INDEX_NAME: documind
       SUPABASE_URL: https://fake.supabase.co
@@ -62,11 +62,13 @@ jobs:
           pip install --upgrade pip
           # Install the package in editable mode so `from src.*` works
           pip install -e ".[dev]" || pip install -e .
-          # Core runtime deps (lightweight subset — no heavy ML models in CI)
+          # Core runtime deps. Embeddings are now a LOCAL sentence-transformers
+          # model, so torch/transformers come in via the editable install above;
+          # the test suite stubs the model so it's never actually loaded/downloaded.
           pip install \
             fastapi uvicorn httpx pydantic[email] python-multipart python-dotenv \
-            langchain langchain-google-genai langchain-pinecone langchain-core \
-            google-generativeai tiktoken \
+            langchain langchain-groq langchain-huggingface langchain-pinecone langchain-core \
+            sentence-transformers tiktoken \
             pytest pytest-asyncio pytest-mock \
             streamlit \
             redis fakeredis
@@ -104,7 +106,7 @@ jobs:
     needs: lint-and-typecheck
 
     env:
-      GOOGLE_API_KEY: AIza-fake-gemini-key-for-ci
+      GROQ_API_KEY: gsk-fake-groq-key-for-ci
       PINECONE_API_KEY: fake-pinecone-key
       PINECONE_INDEX_NAME: documind
       SUPABASE_URL: https://fake.supabase.co
@@ -127,8 +129,8 @@ jobs:
           pip install -e . || true
           pip install \
             fastapi uvicorn httpx pydantic[email] python-multipart python-dotenv \
-            langchain langchain-openai langchain-pinecone langchain-core \
-            openai tiktoken supabase
+            langchain langchain-groq langchain-huggingface langchain-pinecone langchain-core \
+            sentence-transformers tiktoken supabase
 
       - name: Verify FastAPI app imports without errors
         run: |

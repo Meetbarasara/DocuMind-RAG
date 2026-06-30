@@ -1,6 +1,6 @@
 """Regression test for Latency Optimization #5 (see BUGFIXES.md / CODE_REVIEW.md §4).
 
-EmbeddingManager.create_vector_store built a brand new GoogleGenerativeAIEmbeddings(...)
+EmbeddingManager.create_vector_store built a brand new HuggingFaceEmbeddings(...)
 on every call -- i.e. once per file upload -- instead of constructing it
 once and reusing it. Each construction sets up a fresh underlying HTTP
 client with no connection-pool reuse across calls, pure overhead repeated
@@ -16,7 +16,7 @@ from src.components.embeddings import EmbeddingManager
 
 
 class _CountingEmbeddings:
-    """Stands in for GoogleGenerativeAIEmbeddings -- counts how many times it's constructed."""
+    """Stands in for HuggingFaceEmbeddings -- counts how many times it's constructed."""
 
     instances = 0
 
@@ -36,10 +36,10 @@ class _FakeVectorStore:
 
 def test_embedding_model_constructed_once_and_reused_across_calls(monkeypatch):
     _CountingEmbeddings.instances = 0
-    monkeypatch.setattr(embeddings_module, "GoogleGenerativeAIEmbeddings", _CountingEmbeddings)
+    monkeypatch.setattr(embeddings_module, "HuggingFaceEmbeddings", _CountingEmbeddings)
     monkeypatch.setattr(embeddings_module, "PineconeVectorStore", _FakeVectorStore)
 
-    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", GOOGLE_API_KEY="AIza-fake"))
+    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", GROQ_API_KEY="gsk-fake"))
 
     doc1 = Document(page_content="hello world", metadata={"filename": "a.txt"})
     doc2 = Document(page_content="goodbye world", metadata={"filename": "b.txt"})
@@ -58,10 +58,10 @@ def test_embedding_model_reused_even_on_the_no_documents_early_exit(monkeypatch)
     """The "nothing to embed" branch built its own local embedding_model too --
     make sure that path also reuses the same instance, not a third one."""
     _CountingEmbeddings.instances = 0
-    monkeypatch.setattr(embeddings_module, "GoogleGenerativeAIEmbeddings", _CountingEmbeddings)
+    monkeypatch.setattr(embeddings_module, "HuggingFaceEmbeddings", _CountingEmbeddings)
     monkeypatch.setattr(embeddings_module, "PineconeVectorStore", _FakeVectorStore)
 
-    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", GOOGLE_API_KEY="AIza-fake"))
+    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", GROQ_API_KEY="gsk-fake"))
 
     manager.create_vector_store([], namespace="ns-empty")
     doc = Document(page_content="hello world", metadata={"filename": "a.txt"})

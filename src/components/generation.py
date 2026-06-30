@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import collect_runs
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 
 from src.components.config import Config
 from src.components.retrieval import RetrievalManager
@@ -17,7 +17,7 @@ from src.utils import format_chat_history_async
 
 logger = get_logger(__name__)
 
-# Silence noisy httpx logs (emitted on every Gemini API call)
+# Silence noisy httpx logs (emitted on every Groq API call)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -88,11 +88,11 @@ class AnswerGeneration:
         self.config = config
 
         # ── LLM ──────────────────────────────────────────────────────────
-        self.llm = ChatGoogleGenerativeAI(
+        self.llm = ChatGroq(
             model=self.config.LLM_MODEL_NAME,
             temperature=self.config.LLM_TEMPERATURE,
-            google_api_key=self.config.GOOGLE_API_KEY,
-            request_timeout=30,
+            api_key=self.config.GROQ_API_KEY,
+            timeout=30,
         )
 
         # ── RAG chain (prompt → LLM → string) ───────────────────────────
@@ -363,9 +363,10 @@ class AnswerGeneration:
         history_str = await self._format_history(chat_history) if chat_history else ""
 
         # B-hybrid: if a retrieved chunk sits on a visual page, answer over the
-        # rendered page image(s) too (gemini-2.0-flash is multimodal). Text-only
-        # answers stay on the fast prompt→llm chain. BUG-3 fix: ainvoke() awaits
-        # the LLM instead of blocking the event loop.
+        # rendered page image(s) too — only when a vision model is configured.
+        # Off by default now (USE_IMAGE_ANSWERING=False) since Groq Llama-3.3-70B
+        # is text-only, so page_images is empty and this stays on the text chain.
+        # BUG-3 fix: ainvoke() awaits the LLM instead of blocking the event loop.
         if page_images:
             messages = self._multimodal_messages(context, query, history_str, page_images)
             answer = (await self.llm.ainvoke(messages)).content

@@ -3,7 +3,7 @@
 RAGPipeline._retrieval_managers cached one RetrievalManager per namespace
 forever, with no eviction -- unbounded growth as distinct users/namespaces
 accumulate over the app's lifetime. Each cached RetrievalManager holds a
-PineconeVectorStore client, a GoogleGenerativeAIEmbeddings client, and (once hybrid
+PineconeVectorStore client, a HuggingFaceEmbeddings client, and (once hybrid
 search runs) a full BM25 corpus of every chunk in that namespace, in RAM.
 
 Builds RAGPipeline for real (safe -- its __init__ doesn't hit network; only

@@ -1,7 +1,7 @@
 from typing import List
 
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
 from src.components.config import Config
@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # L1: hybrid is now Pinecone-*native*. Each chunk is stored with a DENSE vector
-# (Gemini) + a SPARSE keyword vector (src/components/sparse.py) in one dotproduct
+# (local sentence-transformers) + a SPARSE keyword vector (src/components/sparse.py) in one dotproduct
 # index, and the query is fused server-side. This replaces the old in-process
 # BM25 index — no per-process RAM index, no full-namespace rebuild on the first
 # query after an upload, multi-worker/restart safe. Requires a dotproduct index;
@@ -33,10 +33,13 @@ class RetrievalManager:
     def __init__(self, config: Config):
         self.config = config
 
-        self._embeddings = GoogleGenerativeAIEmbeddings(
-            model=self.config.EMBEDDING_MODEL_NAME,
-            google_api_key=self.config.GOOGLE_API_KEY,
-            output_dimensionality=self.config.EMBEDDING_DIMENSIONS,
+        # Local sentence-transformers (CPU, no API key). normalize_embeddings
+        # matches the cosine Pinecone index. Must use the SAME model + settings
+        # as EmbeddingManager so query vectors live in the ingest vector space.
+        self._embeddings = HuggingFaceEmbeddings(
+            model_name=self.config.EMBEDDING_MODEL_NAME,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
         )
         # A10: pass the key directly to the client instead of mutating the
         # process-global os.environ — a constructor shouldn't have that kind

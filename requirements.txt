@@ -1,6 +1,8 @@
 langchain==1.2.14
 langchain-text-splitters==1.1.1  # token-based chunking (Q1: from_tiktoken_encoder)
-langchain-google-genai==4.2.1  # Gemini chat + embeddings (replaces langchain-openai)
+langchain-groq==1.1.3              # Groq hosted LLM (Llama-3.3-70B) for generation
+langchain-huggingface==1.2.2       # local sentence-transformers embeddings wrapper
+sentence-transformers==5.6.0       # all-mpnet-base-v2 embeddings; runs on CPU, no API/quota
 langchain-pinecone==0.2.13
 pinecone==7.3.0                # A2: replaces deprecated pinecone-client (langchain-pinecone uses the pinecone pkg)
 

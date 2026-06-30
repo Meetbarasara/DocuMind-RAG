@@ -3,7 +3,7 @@ deduped) and routed into a multimodal generation call; text-only answers stay
 on the fast path.
 
 The real vision API call is mocked (like every other LLM call in the suite) —
-these pin the routing + message assembly, not OpenAI's behavior.
+these pin the routing + message assembly, not the model's behavior.
 """
 
 from types import SimpleNamespace
@@ -72,7 +72,7 @@ class _FakeDB:
 
 
 def test_gather_page_images_is_capped_deduped_and_visual_only():
-    p = RAGPipeline(Config(MAX_PAGE_IMAGES_PER_ANSWER=2), db=_FakeDB())
+    p = RAGPipeline(Config(MAX_PAGE_IMAGES_PER_ANSWER=2, USE_IMAGE_ANSWERING=True), db=_FakeDB())
     docs = [
         Document(page_content="a", metadata={"filename": "f.pdf", "page_number": 3, "has_visual": True}),
         Document(page_content="b", metadata={"filename": "f.pdf", "page_number": 3, "has_visual": True}),  # dup page

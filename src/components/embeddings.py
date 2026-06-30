@@ -2,7 +2,7 @@ import hashlib
 from typing import List
 
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
 from src.components.config import Config
@@ -18,20 +18,22 @@ logger = get_logger(__name__)
 
 
 class EmbeddingManager:
-    """Handles embedding documents via Gemini and upserting them into Pinecone."""
+    """Handles embedding documents locally (sentence-transformers) and upserting to Pinecone."""
 
     def __init__(self, config: Config):
         self.config = config
 
         # Latency Optimization #5 fix: this used to be rebuilt inside
         # create_vector_store on every call -- i.e. once per file upload --
-        # even though the model name and API key never change. Building it
-        # once here and reusing it avoids paying the underlying HTTP
-        # client's setup cost on every single upload.
-        self._embedding_model = GoogleGenerativeAIEmbeddings(
-            model=self.config.EMBEDDING_MODEL_NAME,
-            google_api_key=self.config.GOOGLE_API_KEY,
-            output_dimensionality=self.config.EMBEDDING_DIMENSIONS,
+        # even though the model never changes. Building it once here and reusing
+        # it avoids reloading the ~420MB sentence-transformers model (slow + RAM)
+        # on every single upload.
+        # normalize_embeddings=True => unit vectors, which is what the cosine
+        # Pinecone index expects. Runs locally on CPU; no API key, no quota.
+        self._embedding_model = HuggingFaceEmbeddings(
+            model_name=self.config.EMBEDDING_MODEL_NAME,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
         )
 
     def embed_query(self, text: str) -> list:
@@ -172,8 +174,9 @@ class EmbeddingManager:
 
         Needs a dotproduct index. The sparse vector is the stateless lexical
         encoding from src/components/sparse.py; the dense vector is the same
-        Gemini embedding used everywhere else. page_content is stored under the
-        vectorstore's text key so retrieval reconstructs Documents the same way.
+        local sentence-transformers embedding used everywhere else. page_content
+        is stored under the vectorstore's text key so retrieval reconstructs
+        Documents the same way.
         """
         from src.components.sparse import encode_text
 

@@ -24,8 +24,8 @@ logger = get_logger(__name__)
 class EvaluationManager:
     """Run RAGAS metrics against RAG pipeline outputs.
 
-    The RAGAS judge LLM + embeddings are pointed at Gemini (not RAGAS's OpenAI
-    default) so the eval runs on the same provider as the app — see
+    The RAGAS judge LLM (Groq) + embeddings (local) are wired explicitly (not
+    RAGAS's OpenAI default) so the eval runs on the same models as the app — see
     _get_ragas_models.
 
     Metrics evaluated:
@@ -63,28 +63,29 @@ class EvaluationManager:
         """Return the (judge LLM, embeddings) RAGAS should use, wrapped for ragas.
 
         RAGAS otherwise defaults its judge LLM *and* its embedding-based metrics to
-        OpenAI — but the app runs entirely on Gemini and there's no OpenAI key. So
-        we point both at the same Gemini models the pipeline uses (judge at
-        temperature 0 for deterministic scoring). Built once, cached on the manager.
+        OpenAI — but the app has no OpenAI key. So we point both at the same models
+        the pipeline uses: Groq Llama-3.3-70B as the judge (temperature 0 for
+        deterministic scoring) and the local sentence-transformers embeddings.
+        Built once, cached on the manager.
         """
         if self._ragas_models is None:
-            from langchain_google_genai import (
-                ChatGoogleGenerativeAI,
-                GoogleGenerativeAIEmbeddings,
-            )
+            from langchain_huggingface import HuggingFaceEmbeddings
             from ragas.embeddings import LangchainEmbeddingsWrapper
             from ragas.llms import LangchainLLMWrapper
 
-            llm = LangchainLLMWrapper(ChatGoogleGenerativeAI(
+            from langchain_groq import ChatGroq
+
+            llm = LangchainLLMWrapper(ChatGroq(
                 model=self.config.LLM_MODEL_NAME,
                 temperature=0,
-                google_api_key=self.config.GOOGLE_API_KEY,
+                api_key=self.config.GROQ_API_KEY,
             ))
-            # RAGAS uses embeddings internally (answer_relevancy metric); these are
-            # NOT stored in Pinecone, so no output_dimensionality constraint needed.
-            embeddings = LangchainEmbeddingsWrapper(GoogleGenerativeAIEmbeddings(
-                model=self.config.EMBEDDING_MODEL_NAME,
-                google_api_key=self.config.GOOGLE_API_KEY,
+            # RAGAS uses embeddings internally (answer_relevancy metric); local,
+            # so this adds no API cost.
+            embeddings = LangchainEmbeddingsWrapper(HuggingFaceEmbeddings(
+                model_name=self.config.EMBEDDING_MODEL_NAME,
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
             ))
             self._ragas_models = (llm, embeddings)
         return self._ragas_models

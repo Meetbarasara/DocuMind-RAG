@@ -17,7 +17,7 @@ _PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
 # misconfigured deployment fails immediately with a clear error instead of
 # surfacing as a confusing provider error on the first real request.
 _REQUIRED_SECRETS = (
-    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
     "PINECONE_API_KEY",
     "SUPABASE_URL",
     "SUPABASE_ANON_KEY",
@@ -36,14 +36,14 @@ class Config(BaseSettings):
     have a manual os.getenv() call.
     """
 
-    # ── Model settings (Google Gemini) ────────────────────────────────
-    # langchain-google-genai 4.x uses the new google-genai SDK which defaults to
-    # the v1beta endpoint. text-embedding-004 is v1-only; gemini-embedding-001 is
-    # available on both v1 and v1beta, so it's the correct choice here.
-    # output_dimensionality=768 via the Matryoshka API keeps Pinecone dim at 768.
-    EMBEDDING_MODEL_NAME: str = "gemini-embedding-001"
-    EMBEDDING_DIMENSIONS: int = 768   # Matryoshka truncation; Pinecone index must match
-    LLM_MODEL_NAME: str = "gemini-2.0-flash"
+    # ── Model settings ────────────────────────────────────────────────
+    # Both providers' free tiers ran out of quota, so:
+    #  - Embeddings run LOCALLY via sentence-transformers (no API, no quota). The
+    #    all-mpnet-base-v2 model is 768-dim, matching the existing Pinecone index.
+    #  - Generation uses Groq's hosted Llama-3.3-70B (generous free tier, fast).
+    #    Local generation isn't viable on an 8GB CPU-only box.
+    EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-mpnet-base-v2"
+    LLM_MODEL_NAME: str = "llama-3.3-70b-versatile"
 
     # ── Chunking parameters (Q1: token-based, not character-based) ─────
     # LLMs read tokens, not characters, so we split on token boundaries for
@@ -102,7 +102,7 @@ class Config(BaseSettings):
     # ── API keys & services ───────────────────────────────────────────
     # Required (Part C / A10) — Config() raises at construction if any of
     # these are missing or blank. See _validate_required_secrets below.
-    GOOGLE_API_KEY: str
+    GROQ_API_KEY: str
     PINECONE_API_KEY: str
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str
@@ -146,7 +146,9 @@ class Config(BaseSettings):
     # at answer time hand the relevant page(s) to the multimodal LLM so it
     # reads tables/charts/figures in place. PDF only (DOCX can't be
     # page-rendered with lightweight tools). Off => text-only, no snapshots.
-    USE_IMAGE_ANSWERING: bool = True
+    # Default OFF: the Groq Llama-3.3-70B model is text-only, so it can't read
+    # page images. Flip on only with a vision-capable model.
+    USE_IMAGE_ANSWERING: bool = False
     PAGE_IMAGE_DPI: int = 130                # legible text, smaller than 300
     MAX_PAGE_IMAGES_PER_ANSWER: int = 2      # cap vision tokens per answer
 
