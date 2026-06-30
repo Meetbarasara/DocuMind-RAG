@@ -90,6 +90,17 @@ class EvaluationManager:
             self._ragas_models = (llm, embeddings)
         return self._ragas_models
 
+    @staticmethod
+    def _ragas_run_config():
+        """Throttle RAGAS so it survives a rate-limited judge (e.g. Groq's free
+        tier ~30 req/min). RAGAS otherwise fires every (row × metric) job almost
+        at once (default 16 workers) and floods the API into TimeoutErrors that
+        never recover. Few workers + generous timeout/backoff trades wall-clock
+        for actually completing the run."""
+        from ragas import RunConfig
+
+        return RunConfig(max_workers=4, timeout=180, max_retries=10, max_wait=60)
+
     def _get_metrics(self, include_recall: bool):
         """Return the list of RAGAS metric objects to use."""
         from ragas.metrics import (
@@ -152,7 +163,10 @@ class EvaluationManager:
 
             llm, embeddings = self._get_ragas_models()
             dataset = Dataset.from_dict(data)
-            result = evaluate(dataset, metrics=metrics, llm=llm, embeddings=embeddings)
+            result = evaluate(
+                dataset, metrics=metrics, llm=llm, embeddings=embeddings,
+                run_config=self._ragas_run_config(),
+            )
             scores = result.to_pandas().iloc[0].to_dict()
 
             # Clean out non-numeric keys
@@ -213,7 +227,10 @@ class EvaluationManager:
 
             llm, embeddings = self._get_ragas_models()
             dataset = Dataset.from_dict(data)
-            result = evaluate(dataset, metrics=metrics, llm=llm, embeddings=embeddings)
+            result = evaluate(
+                dataset, metrics=metrics, llm=llm, embeddings=embeddings,
+                run_config=self._ragas_run_config(),
+            )
             df = result.to_pandas()
 
             metric_cols = [
