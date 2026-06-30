@@ -13,6 +13,7 @@ regression gate, Pillar E2).
 Usage:
     python -m scripts.run_eval                 # uses data/eval/goldset.v1.jsonl
     python -m scripts.run_eval path/to/set.jsonl
+    python -m scripts.run_eval --retrieval-only # hit@k/recall/mrr only, no LLM tokens
 """
 
 import asyncio
@@ -44,7 +45,10 @@ def _is_refusal(answer: str) -> bool:
     return any(m in a for m in _REFUSAL_MARKERS)
 
 
-async def run(goldset_path: str) -> dict:
+async def run(goldset_path: str, retrieval_only: bool = False) -> dict:
+    # retrieval_only skips the LLM (generation + RAGAS) entirely, so retrieval
+    # tuning (chunking, threshold, hybrid alpha, reranker top-k) can iterate with
+    # ZERO LLM tokens — essential when the LLM is on a rate/token-limited free tier.
     cfg = Config()
     pipeline = RAGPipeline(cfg)
     gold = load_goldset(goldset_path)
@@ -73,8 +77,10 @@ async def run(goldset_path: str) -> dict:
         contexts = [d.page_content for d in retrieved]
         k = len(retrieved) or cfg.TOP_K
 
-        result = await pipeline.generation_manager.generate(q, retrieved)
-        answer = result["answer"]
+        answer = ""
+        if not retrieval_only:
+            result = await pipeline.generation_manager.generate(q, retrieved)
+            answer = result["answer"]
 
         rowscore = {"id": row["id"], "category": row.get("category", "")}
         if relevant:                       # answerable -> retrieval metrics
@@ -85,7 +91,7 @@ async def run(goldset_path: str) -> dict:
             }
             retrieval_scores.append(rs)
             rowscore.update(rs)
-        else:                              # unanswerable -> did it refuse?
+        elif not retrieval_only:           # unanswerable -> did it refuse?
             refused = _is_refusal(answer)
             refusals.append(refused)
             rowscore["refused"] = refused
@@ -102,8 +108,10 @@ async def run(goldset_path: str) -> dict:
         for key in ("hit@k", "recall@k", "mrr"):
             retrieval_summary[key] = sum(s[key] for s in retrieval_scores) / len(retrieval_scores)
 
-    ragas = EvaluationManager(cfg).evaluate_batch(gen_rows)
-    gen_summary = ragas.get("summary", {}) if isinstance(ragas, dict) else {}
+    gen_summary = {}
+    if not retrieval_only:
+        ragas = EvaluationManager(cfg).evaluate_batch(gen_rows)
+        gen_summary = ragas.get("summary", {}) if isinstance(ragas, dict) else {}
 
     summary = {
         "goldset": str(goldset_path),
@@ -144,10 +152,11 @@ def _flat_metrics(summary: dict) -> dict:
 def main():
     args = sys.argv[1:]
     check = "--check" in args
+    retrieval_only = "--retrieval-only" in args
     positional = [a for a in args if not a.startswith("-")]
     goldset_path = positional[0] if positional else str(_ROOT / "data" / "eval" / "goldset.v1.jsonl")
 
-    out = asyncio.run(run(goldset_path))
+    out = asyncio.run(run(goldset_path, retrieval_only=retrieval_only))
     _print_summary(out)
 
     latest = _ROOT / "data" / "eval" / "baseline.json"
