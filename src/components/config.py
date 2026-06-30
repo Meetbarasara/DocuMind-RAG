@@ -40,10 +40,12 @@ class Config(BaseSettings):
     # Both providers' free tiers ran out of quota, so:
     #  - Embeddings run LOCALLY via sentence-transformers (no API, no quota). The
     #    all-mpnet-base-v2 model is 768-dim, matching the existing Pinecone index.
-    #  - Generation uses Groq's hosted Llama-3.3-70B (generous free tier, fast).
-    #    Local generation isn't viable on an 8GB CPU-only box.
+    #  - Generation uses Groq's hosted Llama-3.1-8B-Instant — much higher free
+    #    daily token limits than the 70B (whose 100k tok/day couldn't even finish
+    #    a RAGAS eval) and faster; quality is lower but retrieval is strong and
+    #    answers are cited. Local generation isn't viable on an 8GB CPU-only box.
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-mpnet-base-v2"
-    LLM_MODEL_NAME: str = "llama-3.3-70b-versatile"
+    LLM_MODEL_NAME: str = "llama-3.1-8b-instant"
 
     # ── Chunking parameters (Q1: token-based, not character-based) ─────
     # LLMs read tokens, not characters, so we split on token boundaries for
@@ -150,7 +152,7 @@ class Config(BaseSettings):
     # at answer time hand the relevant page(s) to the multimodal LLM so it
     # reads tables/charts/figures in place. PDF only (DOCX can't be
     # page-rendered with lightweight tools). Off => text-only, no snapshots.
-    # Default OFF: the Groq Llama-3.3-70B model is text-only, so it can't read
+    # Default OFF: the Groq Llama-3.1-8B model is text-only, so it can't read
     # page images. Flip on only with a vision-capable model.
     USE_IMAGE_ANSWERING: bool = False
     PAGE_IMAGE_DPI: int = 130                # legible text, smaller than 300

@@ -10,7 +10,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.42+-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Pinecone](https://img.shields.io/badge/Pinecone-Vector_DB-000000?style=flat&logo=pinecone&logoColor=white)](https://pinecone.io)
-[![Groq](https://img.shields.io/badge/Groq-Llama_3.3_70B-F55036?style=flat&logo=groq&logoColor=white)](https://groq.com)
+[![Groq](https://img.shields.io/badge/Groq-Llama_3.1_8B-F55036?style=flat&logo=groq&logoColor=white)](https://groq.com)
 [![Embeddings](https://img.shields.io/badge/Embeddings-local_all--mpnet-FFD21E?style=flat&logo=huggingface&logoColor=black)](https://huggingface.co/sentence-transformers/all-mpnet-base-v2)
 [![Supabase](https://img.shields.io/badge/Supabase-Auth_+_Storage-3ECF8E?style=flat&logo=supabase&logoColor=white)](https://supabase.io)
 [![CI](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml)
@@ -85,7 +85,7 @@ User Question
  [Cache?]     ── Redis exact/semantic match ──▶  HIT: answer in ms, skip everything below
       │ MISS
       ▼
- [Rewrite]    ── Llama-3.3-70B (Groq) ──▶  Standalone query (resolves pronouns)
+ [Rewrite]    ── Llama-3.1-8B (Groq) ──▶  Standalone query (resolves pronouns)
       │
       ▼
  [Retrieve]   ── dense cosine, or native hybrid ──▶  Top-K candidates above threshold
@@ -94,7 +94,7 @@ User Question
  [Rerank]     ── Cohere Rerank API ──▶  Most relevant few, reordered
       │
       ▼
- [Generate]   ── Llama-3.3-70B (Groq) ──▶  Grounded, cited answer
+ [Generate]   ── Llama-3.1-8B (Groq) ──▶  Grounded, cited answer
       │
       ▼
  SSE Stream ──▶  Token-by-token to UI; cache the answer; 👍/👎 → LangSmith
@@ -128,7 +128,7 @@ User Question
 
 | Layer | Technology |
 |---|---|
-| **LLM** | Groq `llama-3.3-70b-versatile` (hosted, generous free tier) |
+| **LLM** | Groq `llama-3.1-8b-instant` (hosted, high free daily limits) |
 | **Embeddings** | Local `sentence-transformers/all-mpnet-base-v2` (768-dim, CPU, no API/quota) |
 | **Vector DB** | Pinecone (serverless; cosine, or dotproduct for native hybrid) |
 | **Re-ranking** | Cohere Rerank API (optional) |
@@ -388,7 +388,7 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
 | Setting | Default | Description |
 |---|---|---|
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-mpnet-base-v2` | Local embedding model (768-dim, CPU) |
-| `LLM_MODEL_NAME` | `llama-3.3-70b-versatile` | Groq-hosted chat model |
+| `LLM_MODEL_NAME` | `llama-3.1-8b-instant` | Groq-hosted chat model |
 | `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
 | `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
 | `TOP_K` | `10` | Candidate pool retrieved per query (eval-tuned) |
@@ -408,7 +408,7 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
 | `REDIS_URL` | unset | Exact-match query cache — unset disables it (fail-open no-op) |
 | `USE_SEMANTIC_CACHE` | `true` | Serve a near-identical past question (cosine on its embedding); needs `REDIS_URL` |
 | `LANGSMITH_TRACING` | `false` | Trace every chain to LangSmith — needs `LANGSMITH_API_KEY` |
-| `USE_IMAGE_ANSWERING` | `false` | Render PDF pages with figures/tables and answer over the page image — needs a vision-capable LLM (Groq Llama-3.3-70B is text-only) |
+| `USE_IMAGE_ANSWERING` | `false` | Render PDF pages with figures/tables and answer over the page image — needs a vision-capable LLM (Groq Llama-3.1-8B is text-only) |
 | `USE_CITATION_VERIFICATION` | `true` | Flag whether each `[Source: ...]` citation names a real retrieved file |
 
 ---

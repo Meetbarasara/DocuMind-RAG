@@ -364,7 +364,7 @@ class AnswerGeneration:
 
         # B-hybrid: if a retrieved chunk sits on a visual page, answer over the
         # rendered page image(s) too — only when a vision model is configured.
-        # Off by default now (USE_IMAGE_ANSWERING=False) since Groq Llama-3.3-70B
+        # Off by default now (USE_IMAGE_ANSWERING=False) since Groq Llama-3.1-8B
         # is text-only, so page_images is empty and this stays on the text chain.
         # BUG-3 fix: ainvoke() awaits the LLM instead of blocking the event loop.
         if page_images:

@@ -64,7 +64,7 @@ class EvaluationManager:
 
         RAGAS otherwise defaults its judge LLM *and* its embedding-based metrics to
         OpenAI — but the app has no OpenAI key. So we point both at the same models
-        the pipeline uses: Groq Llama-3.3-70B as the judge (temperature 0 for
+        the pipeline uses: Groq Llama-3.1-8B as the judge (temperature 0 for
         deterministic scoring) and the local sentence-transformers embeddings.
         Built once, cached on the manager.
         """
