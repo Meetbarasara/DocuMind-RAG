@@ -37,10 +37,12 @@ class Config(BaseSettings):
     """
 
     # ── Model settings (Google Gemini) ────────────────────────────────
-    # Gemini embeddings are 768-dim (text-embedding-004), NOT 1536 like the old
-    # OpenAI text-embedding-3-small. The Pinecone index dimension is fixed at
-    # creation, so switching providers requires a 768-dim index + re-ingest.
-    EMBEDDING_MODEL_NAME: str = "models/text-embedding-004"
+    # langchain-google-genai 4.x uses the new google-genai SDK which defaults to
+    # the v1beta endpoint. text-embedding-004 is v1-only; gemini-embedding-001 is
+    # available on both v1 and v1beta, so it's the correct choice here.
+    # output_dimensionality=768 via the Matryoshka API keeps Pinecone dim at 768.
+    EMBEDDING_MODEL_NAME: str = "gemini-embedding-001"
+    EMBEDDING_DIMENSIONS: int = 768   # Matryoshka truncation; Pinecone index must match
     LLM_MODEL_NAME: str = "gemini-2.0-flash"
 
     # ── Chunking parameters (Q1: token-based, not character-based) ─────

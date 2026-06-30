@@ -31,6 +31,7 @@ class EmbeddingManager:
         self._embedding_model = GoogleGenerativeAIEmbeddings(
             model=self.config.EMBEDDING_MODEL_NAME,
             google_api_key=self.config.GOOGLE_API_KEY,
+            output_dimensionality=self.config.EMBEDDING_DIMENSIONS,
         )
 
     def embed_query(self, text: str) -> list:

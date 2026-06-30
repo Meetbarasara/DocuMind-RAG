@@ -80,6 +80,8 @@ class EvaluationManager:
                 temperature=0,
                 google_api_key=self.config.GOOGLE_API_KEY,
             ))
+            # RAGAS uses embeddings internally (answer_relevancy metric); these are
+            # NOT stored in Pinecone, so no output_dimensionality constraint needed.
             embeddings = LangchainEmbeddingsWrapper(GoogleGenerativeAIEmbeddings(
                 model=self.config.EMBEDDING_MODEL_NAME,
                 google_api_key=self.config.GOOGLE_API_KEY,

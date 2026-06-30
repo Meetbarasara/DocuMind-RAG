@@ -36,6 +36,7 @@ class RetrievalManager:
         self._embeddings = GoogleGenerativeAIEmbeddings(
             model=self.config.EMBEDDING_MODEL_NAME,
             google_api_key=self.config.GOOGLE_API_KEY,
+            output_dimensionality=self.config.EMBEDDING_DIMENSIONS,
         )
         # A10: pass the key directly to the client instead of mutating the
         # process-global os.environ — a constructor shouldn't have that kind

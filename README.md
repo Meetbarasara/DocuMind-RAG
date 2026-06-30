@@ -128,7 +128,7 @@ User Question
 | Layer | Technology |
 |---|---|
 | **LLM** | Google `gemini-2.0-flash` (multimodal for page-image answers) |
-| **Embeddings** | Google `text-embedding-004` (768-dim) |
+| **Embeddings** | Google `gemini-embedding-001` (768-dim via Matryoshka) |
 | **Vector DB** | Pinecone (serverless; cosine, or dotproduct for native hybrid) |
 | **Re-ranking** | Cohere Rerank API (optional) |
 | **Caching** | Redis (optional — exact-match + semantic) |
@@ -205,8 +205,8 @@ DocuMind/
 - [Google Gemini API key](https://aistudio.google.com/apikey)
 - [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `768`,
   metric: `cosine`). Native hybrid search (off by default) needs a *second*, `dotproduct` index instead.
-  (Gemini's `text-embedding-004` is 768-dim — a 1536-dim index left over from the OpenAI setup will
-  reject these vectors, so re-create the index at 768 and re-ingest your documents.)
+  (`gemini-embedding-001` is requested at 768-dim via Matryoshka truncation — a 1536-dim index left
+  over from the OpenAI setup will reject these vectors, so re-create at 768 and re-ingest documents.)
 - [Supabase project](https://supabase.com) — free tier works fine
 
 ### 1. Clone & install
@@ -385,7 +385,8 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
 
 | Setting | Default | Description |
 |---|---|---|
-| `EMBEDDING_MODEL_NAME` | `models/text-embedding-004` | Gemini embedding model (768-dim) |
+| `EMBEDDING_MODEL_NAME` | `gemini-embedding-001` | Gemini embedding model (v1beta-compatible) |
+| `EMBEDDING_DIMENSIONS` | `768` | Output dim (Matryoshka); Pinecone index must match |
 | `LLM_MODEL_NAME` | `gemini-2.0-flash` | Gemini chat model |
 | `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
 | `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
@@ -424,7 +425,7 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
    size and cost, independent of the source format
 5. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
 6. SHA-256 deduplication removes identical chunks
-7. Gemini embeds each chunk → 768-dim vector (plus a sparse lexical vector, if native hybrid is on)
+7. Gemini embeds each chunk → 768-dim vector via gemini-embedding-001 (+ sparse, if native hybrid is on)
 8. Vectors are upserted to Pinecone under the user's namespace; job status flips to `completed`,
    polled via `GET /api/documents/upload-status/{job_id}`
 
