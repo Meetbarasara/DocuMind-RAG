@@ -99,7 +99,10 @@ class EvaluationManager:
         for actually completing the run."""
         from ragas import RunConfig
 
-        return RunConfig(max_workers=4, timeout=180, max_retries=10, max_wait=60)
+        # max_workers=2: on Groq's free tier even 4 concurrent workers tripped the
+        # per-minute limit into 20s+ backoffs. Near-sequential is slower per row
+        # but avoids the retry storm and actually finishes.
+        return RunConfig(max_workers=2, timeout=180, max_retries=10, max_wait=60)
 
     def _get_metrics(self, include_recall: bool):
         """Return the list of RAGAS metric objects to use."""
