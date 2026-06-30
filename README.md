@@ -10,7 +10,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.42+-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Pinecone](https://img.shields.io/badge/Pinecone-Vector_DB-000000?style=flat&logo=pinecone&logoColor=white)](https://pinecone.io)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?style=flat&logo=openai&logoColor=white)](https://openai.com)
+[![Gemini](https://img.shields.io/badge/Gemini-2.0_Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
 [![Supabase](https://img.shields.io/badge/Supabase-Auth_+_Storage-3ECF8E?style=flat&logo=supabase&logoColor=white)](https://supabase.io)
 [![CI](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -52,7 +52,7 @@ Every answer is:
                          │                  │
                 ┌────────▼──────────────────▼────────┐
                 │          External Services          │
-                │  Pinecone (vectors) · OpenAI (LLM)  │
+                │  Pinecone (vectors) · Gemini (LLM)  │
                 │  + optional: Cohere (rerank) ·       │
                 │    Redis (cache) · LangSmith (trace) │
                 └────────────────────────────────────┘
@@ -73,7 +73,7 @@ Document Upload
  [Chunking]   ── 512 tiktoken tokens ──▶  LangChain Documents with metadata
       │
       ▼
- [Embedding]  ── text-embedding-3-small ──▶  1536-dim vectors (+ sparse, if hybrid is on)
+ [Embedding]  ── text-embedding-004 ──▶  768-dim vectors (+ sparse, if hybrid is on)
       │
       ▼
  [Pinecone]   ── namespace = user_id ──▶  Per-user vector isolation; job → completed
@@ -84,7 +84,7 @@ User Question
  [Cache?]     ── Redis exact/semantic match ──▶  HIT: answer in ms, skip everything below
       │ MISS
       ▼
- [Rewrite]    ── gpt-4o-mini ──▶  Standalone query (resolves pronouns)
+ [Rewrite]    ── gemini-2.0-flash ──▶  Standalone query (resolves pronouns)
       │
       ▼
  [Retrieve]   ── dense cosine, or native hybrid ──▶  Top-K candidates above threshold
@@ -93,7 +93,7 @@ User Question
  [Rerank]     ── Cohere Rerank API ──▶  Most relevant few, reordered
       │
       ▼
- [Generate]   ── gpt-4o-mini (+ page image, if visual) ──▶  Grounded, cited answer
+ [Generate]   ── gemini-2.0-flash (+ page image, if visual) ──▶  Grounded, cited answer
       │
       ▼
  SSE Stream ──▶  Token-by-token to UI; cache the answer; 👍/👎 → LangSmith
@@ -127,8 +127,8 @@ User Question
 
 | Layer | Technology |
 |---|---|
-| **LLM** | OpenAI `gpt-4o-mini` (multimodal for page-image answers) |
-| **Embeddings** | OpenAI `text-embedding-3-small` |
+| **LLM** | Google `gemini-2.0-flash` (multimodal for page-image answers) |
+| **Embeddings** | Google `text-embedding-004` (768-dim) |
 | **Vector DB** | Pinecone (serverless; cosine, or dotproduct for native hybrid) |
 | **Re-ranking** | Cohere Rerank API (optional) |
 | **Caching** | Redis (optional — exact-match + semantic) |
@@ -153,7 +153,7 @@ DocuMind/
 │   ├── components/
 │   │   ├── config.py          # pydantic-settings: typed, fail-fast, env-driven config
 │   │   ├── ingestion.py       # Document parsing & token-based chunking
-│   │   ├── embeddings.py      # OpenAI embed + Pinecone upsert (dense or native hybrid)
+│   │   ├── embeddings.py      # Gemini embed + Pinecone upsert (dense or native hybrid)
 │   │   ├── retrieval.py       # Dense/hybrid search + Cohere re-rank
 │   │   ├── sparse.py          # Stateless lexical encoder for native hybrid (no extra dep)
 │   │   ├── generation.py      # Query rewriting + LLM generation + SSE + feedback run_id
@@ -202,9 +202,11 @@ DocuMind/
 ### Prerequisites
 
 - Python 3.11+ (or Docker, if you'd rather skip the venv — see step 4)
-- [OpenAI API key](https://platform.openai.com/api-keys)
-- [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `1536`,
+- [Google Gemini API key](https://aistudio.google.com/apikey)
+- [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `768`,
   metric: `cosine`). Native hybrid search (off by default) needs a *second*, `dotproduct` index instead.
+  (Gemini's `text-embedding-004` is 768-dim — a 1536-dim index left over from the OpenAI setup will
+  reject these vectors, so re-create the index at 768 and re-ingest your documents.)
 - [Supabase project](https://supabase.com) — free tier works fine
 
 ### 1. Clone & install
@@ -237,7 +239,7 @@ cp .env.example .env
 Edit `.env` with your credentials:
 
 ```env
-OPENAI_API_KEY=sk-...
+GOOGLE_API_KEY=AIza...
 PINECONE_API_KEY=pcsk_...
 PINECONE_INDEX_NAME=documind
 SUPABASE_URL=https://<project-ref>.supabase.co
@@ -281,7 +283,7 @@ streamlit run frontend/app.py
 ```
 
 Open **http://localhost:8501** in your browser. `Config`'s fail-fast validation means the app
-refuses to boot if a required secret (`OPENAI_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_*`) is
+refuses to boot if a required secret (`GOOGLE_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_*`) is
 missing or blank — check the startup error if it doesn't come up.
 
 ---
@@ -376,15 +378,15 @@ Interactive docs: **http://localhost:8000/docs**
 ## Configuration Reference
 
 All settings live in `src/components/config.py` (`pydantic-settings`) and are overridable via
-`.env` — the five required secrets (`OPENAI_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`,
+`.env` — the five required secrets (`GOOGLE_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`,
 `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) fail fast at startup if missing or blank.
 
 **Core**
 
 | Setting | Default | Description |
 |---|---|---|
-| `EMBEDDING_MODEL_NAME` | `text-embedding-3-small` | OpenAI embedding model |
-| `LLM_MODEL_NAME` | `gpt-4o-mini` | OpenAI chat model |
+| `EMBEDDING_MODEL_NAME` | `models/text-embedding-004` | Gemini embedding model (768-dim) |
+| `LLM_MODEL_NAME` | `gemini-2.0-flash` | Gemini chat model |
 | `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
 | `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
 | `TOP_K` | `5` | Chunks retrieved per query |
@@ -422,7 +424,7 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
    size and cost, independent of the source format
 5. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
 6. SHA-256 deduplication removes identical chunks
-7. OpenAI embeds each chunk → 1536-dim vector (plus a sparse lexical vector, if native hybrid is on)
+7. Gemini embeds each chunk → 768-dim vector (plus a sparse lexical vector, if native hybrid is on)
 8. Vectors are upserted to Pinecone under the user's namespace; job status flips to `completed`,
    polled via `GET /api/documents/upload-status/{job_id}`
 

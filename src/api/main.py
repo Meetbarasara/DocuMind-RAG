@@ -3,7 +3,7 @@
 Starts the API server with:
     - CORS middleware (allows Streamlit frontend)
     - Request-level logging middleware
-    - SlowAPI rate limiting (protects Pinecone + OpenAI quota)
+    - SlowAPI rate limiting (protects Pinecone + Gemini quota)
     - Auth, Documents, Chat, and Evaluate routers
     - Health-check endpoint
 """
@@ -82,7 +82,7 @@ config = get_config()
 
 app = FastAPI(
     title="DocuMind RAG API",
-    description="Document intelligence powered by Pinecone + OpenAI + Supabase",
+    description="Document intelligence powered by Pinecone + Gemini + Supabase",
     version="1.0.0",
     lifespan=lifespan,
 )

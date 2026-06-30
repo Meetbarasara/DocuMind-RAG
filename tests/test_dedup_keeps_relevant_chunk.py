@@ -21,7 +21,7 @@ def _make_retrieval_manager():
     rm = RetrievalManager.__new__(RetrievalManager)
     rm.config = Config(
         PINECONE_API_KEY="fake",
-        OPENAI_API_KEY="sk-fake",
+        GOOGLE_API_KEY="AIza-fake",
         USE_CHUNK_DEDUP=True,
         CHUNK_DEDUP_THRESHOLD=0.85,
     )

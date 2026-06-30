@@ -86,7 +86,7 @@ class RAGPipeline:
 
         cfg = Config(
             PINECONE_NAMESPACE=namespace,
-            OPENAI_API_KEY=self.config.OPENAI_API_KEY,
+            GOOGLE_API_KEY=self.config.GOOGLE_API_KEY,
             PINECONE_API_KEY=self.config.PINECONE_API_KEY,
             PINECONE_INDEX_NAME=self.config.PINECONE_INDEX_NAME,
             EMBEDDING_MODEL_NAME=self.config.EMBEDDING_MODEL_NAME,

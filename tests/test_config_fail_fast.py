@@ -1,7 +1,7 @@
 """Part C / A10: pydantic-settings + fail-fast secret validation.
 
 Two characterizations of the gap this closes:
-  1. A missing or blank required secret (OPENAI/PINECONE/SUPABASE) must raise at
+  1. A missing or blank required secret (GOOGLE/PINECONE/SUPABASE) must raise at
      Config() construction time -- not silently become None/"" and fail later,
      deep inside a request, with a confusing provider error.
   2. RetrievalManager / EmbeddingManager must not mutate the global os.environ
@@ -35,7 +35,7 @@ class _RecordingVectorStore:
         type(self).captured = kwargs
 
 _REQUIRED = dict(
-    OPENAI_API_KEY="sk-fake",
+    GOOGLE_API_KEY="AIza-fake",
     PINECONE_API_KEY="fake",
     SUPABASE_URL="https://fake.supabase.co",
     SUPABASE_ANON_KEY="fake",
@@ -52,7 +52,7 @@ def test_missing_required_secret_fails_fast(missing):
 
 @pytest.mark.parametrize("blank", list(_REQUIRED))
 def test_blank_required_secret_fails_fast(blank):
-    """An empty/whitespace value (e.g. `OPENAI_API_KEY=` in a .env) is just as
+    """An empty/whitespace value (e.g. `GOOGLE_API_KEY=` in a .env) is just as
     broken as a missing one and must be rejected the same way."""
     kwargs = {**_REQUIRED, blank: "   "}
     with pytest.raises(ValidationError):
@@ -61,7 +61,7 @@ def test_blank_required_secret_fails_fast(blank):
 
 def test_all_required_secrets_present_constructs_cleanly():
     cfg = Config(**_REQUIRED)
-    assert cfg.OPENAI_API_KEY == "sk-fake"
+    assert cfg.GOOGLE_API_KEY == "AIza-fake"
 
 
 def test_optional_secrets_stay_optional():

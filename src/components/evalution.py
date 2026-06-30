@@ -24,6 +24,10 @@ logger = get_logger(__name__)
 class EvaluationManager:
     """Run RAGAS metrics against RAG pipeline outputs.
 
+    The RAGAS judge LLM + embeddings are pointed at Gemini (not RAGAS's OpenAI
+    default) so the eval runs on the same provider as the app — see
+    _get_ragas_models.
+
     Metrics evaluated:
         - ``faithfulness``        — Is the answer grounded in the retrieved context?
         - ``answer_relevancy``    — How relevant is the answer to the question?
@@ -34,6 +38,9 @@ class EvaluationManager:
     def __init__(self, config: Config):
         self.config = config
         self._ragas_available = self._check_ragas()
+        # Lazily-built (judge LLM, embeddings) pair, wrapped for RAGAS. Built once
+        # and reused across rows. See _get_ragas_models for why this is needed.
+        self._ragas_models = None
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Setup helpers
@@ -51,6 +58,34 @@ class EvaluationManager:
                 "Install it with: pip install ragas"
             )
         return available
+
+    def _get_ragas_models(self):
+        """Return the (judge LLM, embeddings) RAGAS should use, wrapped for ragas.
+
+        RAGAS otherwise defaults its judge LLM *and* its embedding-based metrics to
+        OpenAI — but the app runs entirely on Gemini and there's no OpenAI key. So
+        we point both at the same Gemini models the pipeline uses (judge at
+        temperature 0 for deterministic scoring). Built once, cached on the manager.
+        """
+        if self._ragas_models is None:
+            from langchain_google_genai import (
+                ChatGoogleGenerativeAI,
+                GoogleGenerativeAIEmbeddings,
+            )
+            from ragas.embeddings import LangchainEmbeddingsWrapper
+            from ragas.llms import LangchainLLMWrapper
+
+            llm = LangchainLLMWrapper(ChatGoogleGenerativeAI(
+                model=self.config.LLM_MODEL_NAME,
+                temperature=0,
+                google_api_key=self.config.GOOGLE_API_KEY,
+            ))
+            embeddings = LangchainEmbeddingsWrapper(GoogleGenerativeAIEmbeddings(
+                model=self.config.EMBEDDING_MODEL_NAME,
+                google_api_key=self.config.GOOGLE_API_KEY,
+            ))
+            self._ragas_models = (llm, embeddings)
+        return self._ragas_models
 
     def _get_metrics(self, include_recall: bool):
         """Return the list of RAGAS metric objects to use."""
@@ -112,8 +147,9 @@ class EvaluationManager:
             if include_recall:
                 data["ground_truth"] = [ground_truth]
 
+            llm, embeddings = self._get_ragas_models()
             dataset = Dataset.from_dict(data)
-            result = evaluate(dataset, metrics=metrics)
+            result = evaluate(dataset, metrics=metrics, llm=llm, embeddings=embeddings)
             scores = result.to_pandas().iloc[0].to_dict()
 
             # Clean out non-numeric keys
@@ -172,8 +208,9 @@ class EvaluationManager:
                 if include_recall:
                     data["ground_truth"].append(item.get("ground_truth", ""))
 
+            llm, embeddings = self._get_ragas_models()
             dataset = Dataset.from_dict(data)
-            result = evaluate(dataset, metrics=metrics)
+            result = evaluate(dataset, metrics=metrics, llm=llm, embeddings=embeddings)
             df = result.to_pandas()
 
             metric_cols = [

@@ -1,6 +1,6 @@
 langchain==1.2.14
 langchain-text-splitters==1.1.1  # token-based chunking (Q1: from_tiktoken_encoder)
-langchain-openai==1.1.12
+langchain-google-genai==4.2.1  # Gemini chat + embeddings (replaces langchain-openai)
 langchain-pinecone==0.2.13
 pinecone==7.3.0                # A2: replaces deprecated pinecone-client (langchain-pinecone uses the pinecone pkg)
 

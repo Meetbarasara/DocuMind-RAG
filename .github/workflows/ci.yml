@@ -40,7 +40,7 @@ jobs:
     env:
       # Fake keys so modules that read Config() at import time don't crash.
       # Real secrets are NOT needed for unit tests (all external calls are mocked).
-      OPENAI_API_KEY: sk-fake-openai-key-for-ci
+      GOOGLE_API_KEY: AIza-fake-gemini-key-for-ci
       PINECONE_API_KEY: fake-pinecone-key
       PINECONE_INDEX_NAME: documind
       SUPABASE_URL: https://fake.supabase.co
@@ -65,8 +65,8 @@ jobs:
           # Core runtime deps (lightweight subset — no heavy ML models in CI)
           pip install \
             fastapi uvicorn httpx pydantic[email] python-multipart python-dotenv \
-            langchain langchain-openai langchain-pinecone langchain-core \
-            openai tiktoken \
+            langchain langchain-google-genai langchain-pinecone langchain-core \
+            google-generativeai tiktoken \
             pytest pytest-asyncio pytest-mock \
             streamlit \
             redis fakeredis
@@ -104,7 +104,7 @@ jobs:
     needs: lint-and-typecheck
 
     env:
-      OPENAI_API_KEY: sk-fake-openai-key-for-ci
+      GOOGLE_API_KEY: AIza-fake-gemini-key-for-ci
       PINECONE_API_KEY: fake-pinecone-key
       PINECONE_INDEX_NAME: documind
       SUPABASE_URL: https://fake.supabase.co

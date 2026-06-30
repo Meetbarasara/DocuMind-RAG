@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tracers.context import collect_runs
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from src.components.config import Config
 from src.components.retrieval import RetrievalManager
@@ -17,7 +17,7 @@ from src.utils import format_chat_history_async
 
 logger = get_logger(__name__)
 
-# Silence noisy httpx logs (emitted on every OpenAI API call)
+# Silence noisy httpx logs (emitted on every Gemini API call)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -88,10 +88,10 @@ class AnswerGeneration:
         self.config = config
 
         # ── LLM ──────────────────────────────────────────────────────────
-        self.llm = ChatOpenAI(
+        self.llm = ChatGoogleGenerativeAI(
             model=self.config.LLM_MODEL_NAME,
             temperature=self.config.LLM_TEMPERATURE,
-            api_key=self.config.OPENAI_API_KEY,
+            google_api_key=self.config.GOOGLE_API_KEY,
             request_timeout=30,
         )
 
@@ -363,7 +363,7 @@ class AnswerGeneration:
         history_str = await self._format_history(chat_history) if chat_history else ""
 
         # B-hybrid: if a retrieved chunk sits on a visual page, answer over the
-        # rendered page image(s) too (gpt-4o-mini is multimodal). Text-only
+        # rendered page image(s) too (gemini-2.0-flash is multimodal). Text-only
         # answers stay on the fast prompt→llm chain. BUG-3 fix: ainvoke() awaits
         # the LLM instead of blocking the event loop.
         if page_images:

@@ -1,6 +1,6 @@
 """Regression test for Latency Optimization #5 (see BUGFIXES.md / CODE_REVIEW.md §4).
 
-EmbeddingManager.create_vector_store built a brand new OpenAIEmbeddings(...)
+EmbeddingManager.create_vector_store built a brand new GoogleGenerativeAIEmbeddings(...)
 on every call -- i.e. once per file upload -- instead of constructing it
 once and reusing it. Each construction sets up a fresh underlying HTTP
 client with no connection-pool reuse across calls, pure overhead repeated
@@ -15,8 +15,8 @@ from src.components.config import Config
 from src.components.embeddings import EmbeddingManager
 
 
-class _CountingOpenAIEmbeddings:
-    """Stands in for OpenAIEmbeddings -- counts how many times it's constructed."""
+class _CountingEmbeddings:
+    """Stands in for GoogleGenerativeAIEmbeddings -- counts how many times it's constructed."""
 
     instances = 0
 
@@ -35,11 +35,11 @@ class _FakeVectorStore:
 
 
 def test_embedding_model_constructed_once_and_reused_across_calls(monkeypatch):
-    _CountingOpenAIEmbeddings.instances = 0
-    monkeypatch.setattr(embeddings_module, "OpenAIEmbeddings", _CountingOpenAIEmbeddings)
+    _CountingEmbeddings.instances = 0
+    monkeypatch.setattr(embeddings_module, "GoogleGenerativeAIEmbeddings", _CountingEmbeddings)
     monkeypatch.setattr(embeddings_module, "PineconeVectorStore", _FakeVectorStore)
 
-    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", OPENAI_API_KEY="sk-fake"))
+    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", GOOGLE_API_KEY="AIza-fake"))
 
     doc1 = Document(page_content="hello world", metadata={"filename": "a.txt"})
     doc2 = Document(page_content="goodbye world", metadata={"filename": "b.txt"})
@@ -47,9 +47,9 @@ def test_embedding_model_constructed_once_and_reused_across_calls(monkeypatch):
     manager.create_vector_store([doc1], namespace="ns1")
     manager.create_vector_store([doc2], namespace="ns2")
 
-    assert _CountingOpenAIEmbeddings.instances == 1, (
+    assert _CountingEmbeddings.instances == 1, (
         "expected the embedding model to be constructed once (in __init__) and "
-        f"reused across calls, but got {_CountingOpenAIEmbeddings.instances} separate "
+        f"reused across calls, but got {_CountingEmbeddings.instances} separate "
         "instances across 2 create_vector_store calls"
     )
 
@@ -57,14 +57,14 @@ def test_embedding_model_constructed_once_and_reused_across_calls(monkeypatch):
 def test_embedding_model_reused_even_on_the_no_documents_early_exit(monkeypatch):
     """The "nothing to embed" branch built its own local embedding_model too --
     make sure that path also reuses the same instance, not a third one."""
-    _CountingOpenAIEmbeddings.instances = 0
-    monkeypatch.setattr(embeddings_module, "OpenAIEmbeddings", _CountingOpenAIEmbeddings)
+    _CountingEmbeddings.instances = 0
+    monkeypatch.setattr(embeddings_module, "GoogleGenerativeAIEmbeddings", _CountingEmbeddings)
     monkeypatch.setattr(embeddings_module, "PineconeVectorStore", _FakeVectorStore)
 
-    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", OPENAI_API_KEY="sk-fake"))
+    manager = EmbeddingManager(Config(PINECONE_API_KEY="fake", GOOGLE_API_KEY="AIza-fake"))
 
     manager.create_vector_store([], namespace="ns-empty")
     doc = Document(page_content="hello world", metadata={"filename": "a.txt"})
     manager.create_vector_store([doc], namespace="ns1")
 
-    assert _CountingOpenAIEmbeddings.instances == 1
+    assert _CountingEmbeddings.instances == 1

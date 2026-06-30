@@ -17,7 +17,7 @@ _PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
 # misconfigured deployment fails immediately with a clear error instead of
 # surfacing as a confusing provider error on the first real request.
 _REQUIRED_SECRETS = (
-    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
     "PINECONE_API_KEY",
     "SUPABASE_URL",
     "SUPABASE_ANON_KEY",
@@ -36,9 +36,12 @@ class Config(BaseSettings):
     have a manual os.getenv() call.
     """
 
-    # ── Model settings ────────────────────────────────────────────────
-    EMBEDDING_MODEL_NAME: str = "text-embedding-3-small"
-    LLM_MODEL_NAME: str = "gpt-4o-mini"
+    # ── Model settings (Google Gemini) ────────────────────────────────
+    # Gemini embeddings are 768-dim (text-embedding-004), NOT 1536 like the old
+    # OpenAI text-embedding-3-small. The Pinecone index dimension is fixed at
+    # creation, so switching providers requires a 768-dim index + re-ingest.
+    EMBEDDING_MODEL_NAME: str = "models/text-embedding-004"
+    LLM_MODEL_NAME: str = "gemini-2.0-flash"
 
     # ── Chunking parameters (Q1: token-based, not character-based) ─────
     # LLMs read tokens, not characters, so we split on token boundaries for
@@ -97,7 +100,7 @@ class Config(BaseSettings):
     # ── API keys & services ───────────────────────────────────────────
     # Required (Part C / A10) — Config() raises at construction if any of
     # these are missing or blank. See _validate_required_secrets below.
-    OPENAI_API_KEY: str
+    GOOGLE_API_KEY: str
     PINECONE_API_KEY: str
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str

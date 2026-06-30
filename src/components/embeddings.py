@@ -2,7 +2,7 @@ import hashlib
 from typing import List
 
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
 from src.components.config import Config
@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 
 class EmbeddingManager:
-    """Handles embedding documents via OpenAI and upserting them into Pinecone."""
+    """Handles embedding documents via Gemini and upserting them into Pinecone."""
 
     def __init__(self, config: Config):
         self.config = config
@@ -28,9 +28,9 @@ class EmbeddingManager:
         # even though the model name and API key never change. Building it
         # once here and reusing it avoids paying the underlying HTTP
         # client's setup cost on every single upload.
-        self._embedding_model = OpenAIEmbeddings(
+        self._embedding_model = GoogleGenerativeAIEmbeddings(
             model=self.config.EMBEDDING_MODEL_NAME,
-            openai_api_key=self.config.OPENAI_API_KEY,
+            google_api_key=self.config.GOOGLE_API_KEY,
         )
 
     def embed_query(self, text: str) -> list:
@@ -171,7 +171,7 @@ class EmbeddingManager:
 
         Needs a dotproduct index. The sparse vector is the stateless lexical
         encoding from src/components/sparse.py; the dense vector is the same
-        OpenAI embedding used everywhere else. page_content is stored under the
+        Gemini embedding used everywhere else. page_content is stored under the
         vectorstore's text key so retrieval reconstructs Documents the same way.
         """
         from src.components.sparse import encode_text
