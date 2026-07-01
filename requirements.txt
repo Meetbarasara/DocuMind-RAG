@@ -1,6 +1,7 @@
 langchain==1.2.14
 langchain-text-splitters==1.1.1  # token-based chunking (Q1: from_tiktoken_encoder)
-langchain-groq==1.1.3              # Groq hosted LLM (Llama-3.3-70B) for generation
+langchain-groq==1.1.3              # Groq hosted LLM for chat generation
+langchain-openai==1.1.11           # OpenAI-compatible client for the compliance judge (Cerebras/Groq/OpenRouter endpoints)
 langchain-huggingface==1.2.2       # local sentence-transformers embeddings wrapper
 sentence-transformers==5.6.0       # all-mpnet-base-v2 embeddings; runs on CPU, no API/quota
 langchain-pinecone==0.2.13

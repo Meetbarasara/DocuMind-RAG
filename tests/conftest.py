@@ -27,6 +27,11 @@ for _var, _val in (
     ("LANGSMITH_TRACING", "false"),
     ("REDIS_URL", ""),
     ("USE_HYBRID_SEARCH", "false"),
+    # Judge-model keys leak the same way (a dev's real .env sets CEREBRAS_API_KEY
+    # once they configure the compliance judge) — pin them inert so the judge
+    # factory's "missing key -> clear error" path stays testable.
+    ("CEREBRAS_API_KEY", ""),
+    ("OPENROUTER_API_KEY", ""),
 ):
     os.environ.setdefault(_var, _val)
 

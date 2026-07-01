@@ -45,7 +45,9 @@ The insight: don't use one model for everything. Match model strength to step di
 | **The judge** (does policy satisfy requirement?) | **hard** | **Cerebras `llama-3.3-70b`** | free |
 | Embeddings / retrieval / rerank | — | local mpnet + Cohere | free / already keyed |
 
-**Swappability (prevents lock-in):** add config `JUDGE_PROVIDER` (`cerebras` \| `groq` \| `openrouter`) + `JUDGE_MODEL`. A small factory builds the judge LLM. Swapping free→paid (or Cerebras→DeepSeek) is a one-line env change, no code edit.
+**Integration (verified 2026-07-02):** reach Cerebras via its **OpenAI-compatible endpoint** using `ChatOpenAI(base_url="https://api.cerebras.ai/v1")` — **not** `langchain-cerebras`, whose 0.6.0 pins langchain-core 0.3.x and downgrades/breaks this 1.x stack (confirmed and reverted). Cerebras, Groq and OpenRouter are all OpenAI-compatible, so one client + a per-provider base_url covers all three.
+
+**Swappability (prevents lock-in):** config `JUDGE_PROVIDER` (`cerebras` \| `groq` \| `openrouter`) + `JUDGE_MODEL`; `build_judge_llm()` factory in `src/components/judge.py`. Swapping free→paid (or Cerebras→DeepSeek) is a one-line env change, no code edit. **DONE + tested** (`tests/test_judge_factory.py`).
 
 **`CEREBRAS_API_KEY` is an OPTIONAL secret** (like `COHERE_API_KEY`). The existing app keeps running without it; the compliance endpoints return a clear 503 "judge model not configured" instead of crashing at startup. (Do **not** add it to `_REQUIRED_SECRETS` — that would break the app for anyone not using compliance.)
 

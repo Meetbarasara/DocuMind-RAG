@@ -120,6 +120,18 @@ class Config(BaseSettings):
     COHERE_API_KEY: Optional[str] = None
     LANGSMITH_API_KEY: Optional[str] = None
 
+    # ── Compliance judge model (routed separately from the fast chat LLM) ──
+    # The gap-analysis judge ("does this policy satisfy this requirement?") needs
+    # stronger reasoning than the fast 8b chat model. Default = free Cerebras
+    # llama-3.3-70b via its OpenAI-compatible endpoint; swappable to groq /
+    # openrouter with no code change. OPTIONAL — the compliance feature raises a
+    # clear error if the chosen provider's key is missing; the rest of the app
+    # runs regardless (so these are NOT in _REQUIRED_SECRETS).
+    JUDGE_PROVIDER: str = "cerebras"          # cerebras | groq | openrouter
+    JUDGE_MODEL: str = "llama-3.3-70b"
+    CEREBRAS_API_KEY: Optional[str] = None
+    OPENROUTER_API_KEY: Optional[str] = None
+
     SUPABASE_STORAGE_BUCKET: str = "documents"
 
     PINECONE_INDEX_NAME: str = "documind"
