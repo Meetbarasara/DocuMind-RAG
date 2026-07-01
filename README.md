@@ -444,6 +444,32 @@ All settings live in `src/components/config.py` (`pydantic-settings`) and are ov
 
 ---
 
+## Evaluation Results
+
+Measured with the offline harness ([`scripts/run_eval.py`](scripts/run_eval.py)) against a versioned
+gold set of **41 questions across 4 documents** (an ML research paper + 3 HR-policy handbooks from
+different organisations — testing generalisation, not a single memorised doc). Retrieval is scored
+page-level (label-robust to re-chunking); generation is scored by RAGAS. Every gold answer's page
+label is auto-verified against the source. Reproduce with `python -m scripts.run_eval`.
+
+| Stage | Metric | Score |
+|---|---|---|
+| **Retrieval** | Hit@k | **0.97** |
+| | Recall@k | **0.96** |
+| | MRR | **0.92** |
+| **Generation** (RAGAS) | Faithfulness (answer grounded in context) | **0.80** |
+| | Answer relevancy | **0.74** |
+| | Context precision | **0.86** |
+| | Context recall | **0.89** |
+| **Safety** | Refusal rate on unanswerable questions | **1.00** |
+
+Retrieval uses local `all-mpnet-base-v2` embeddings + Pinecone native hybrid + Cohere rerank
+(`TOP_K=10`, `RERANKER_TOP_K=5`, eval-tuned). A committed baseline
+([`data/eval/baseline.committed.json`](data/eval/baseline.committed.json)) arms a CI regression
+gate (`run_eval --check`) that fails if any metric drops past tolerance.
+
+---
+
 ## CI / CD
 
 GitHub Actions runs on every push and pull request:
