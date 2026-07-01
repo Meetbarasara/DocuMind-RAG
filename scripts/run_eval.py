@@ -73,7 +73,12 @@ async def run(goldset_path: str, retrieval_only: bool = False) -> dict:
         relevant = row.get("relevant_pages", [])
 
         retrieved = rm.retrieve(q)
-        pages = [d.metadata.get("page_number") for d in retrieved if d.metadata.get("page_number")]
+        # Multi-doc goldsets share one eval namespace, so raw page numbers collide
+        # across files (p4 of doc A vs p4 of doc B). Credit a retrieval hit only
+        # when the chunk is from THIS row's source_file.
+        src_file = row.get("source_file")
+        pages = [d.metadata.get("page_number") for d in retrieved
+                 if d.metadata.get("page_number") and d.metadata.get("filename") == src_file]
         contexts = [d.page_content for d in retrieved]
         k = len(retrieved) or cfg.TOP_K
 
@@ -154,7 +159,7 @@ def main():
     check = "--check" in args
     retrieval_only = "--retrieval-only" in args
     positional = [a for a in args if not a.startswith("-")]
-    goldset_path = positional[0] if positional else str(_ROOT / "data" / "eval" / "goldset.v1.jsonl")
+    goldset_path = positional[0] if positional else str(_ROOT / "data" / "eval" / "goldset.v2.jsonl")
 
     out = asyncio.run(run(goldset_path, retrieval_only=retrieval_only))
     _print_summary(out)
