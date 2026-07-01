@@ -15,8 +15,10 @@ Anti-hallucination design:
     status "Needs review", it never crashes the whole check.
 """
 
+import asyncio
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -203,3 +205,40 @@ async def judge_requirement(
         policy_filename=filename,
         policy_page=page,
     )
+
+
+# ── Orchestration: run a full check (streamed, bounded concurrency) ─────────
+
+async def run_check(requirements: List[Requirement], retrieval_manager, judge_llm, *,
+                    concurrency: int = 3):
+    """Async-generate ``(Requirement, Verdict)`` per requirement, as each finishes.
+
+    Retrieval is per-requirement and blocking, so it runs in a thread. At most
+    ``concurrency`` requirements are judged at once — a bounded pool so a
+    rate-limited free judge tier doesn't 429-storm (the exact failure mode we hit
+    running RAGAS). Yields in completion order; the caller sorts/persists.
+    """
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(req: Requirement):
+        async with sem:
+            docs = await asyncio.to_thread(retrieval_manager.retrieve, req.text)
+            return req, await judge_requirement(req, docs, judge_llm)
+
+    tasks = [asyncio.create_task(_one(r)) for r in requirements]
+    try:
+        for fut in asyncio.as_completed(tasks):
+            yield await fut
+    finally:
+        for t in tasks:                 # consumer stopped early -> don't leak tasks
+            if not t.done():
+                t.cancel()
+
+
+def summarize(verdicts: List[Verdict]) -> dict:
+    """Count verdicts by status for the summary cards."""
+    counts = Counter(v.status for v in verdicts)
+    out = {"total": len(verdicts)}
+    for s in (*VALID_STATUSES, NEEDS_REVIEW):
+        out[s] = counts.get(s, 0)
+    return out

@@ -10,9 +10,12 @@ from langchain_core.documents import Document
 from src.components.compliance import (
     NEEDS_REVIEW,
     Requirement,
+    Verdict,
     _parse_json_object,
     extract_requirements,
     judge_requirement,
+    run_check,
+    summarize,
 )
 
 
@@ -111,3 +114,27 @@ async def test_confidence_clamped():
     llm = _FakeLLM('{"status":"Gap","policy_quote":"","confidence":5,"rationale":"x"}')
     v = await judge_requirement(Requirement(id="r6", text="anything"), [_policy("x")], llm)
     assert v.confidence == 1.0
+
+
+# ── Orchestration ──────────────────────────────────────────────────────────
+
+class _FakeRM:
+    """Retrieval manager stub — retrieve() returns one policy chunk per call."""
+
+    def retrieve(self, query, *a, **k):
+        return [_policy("We verify an OVD for every customer at onboarding.", page=1)]
+
+
+@pytest.mark.asyncio
+async def test_run_check_streams_a_verdict_per_requirement():
+    llm = _FakeLLM('{"status":"Covered","policy_quote":"We verify an OVD for every customer at onboarding.","confidence":0.9,"rationale":"ok"}')
+    reqs = [Requirement(id=f"r{i}", text=f"req {i}") for i in range(5)]
+    seen = [v async for (_, v) in run_check(reqs, _FakeRM(), llm, concurrency=2)]
+    assert len(seen) == 5
+    assert all(v.status == "Covered" and v.policy_page == 1 for v in seen)
+
+
+def test_summarize_counts_by_status():
+    vs = [Verdict("a", "Covered"), Verdict("b", "Covered"), Verdict("c", "Gap"), Verdict("d", NEEDS_REVIEW)]
+    s = summarize(vs)
+    assert s == {"total": 4, "Covered": 2, "Partial": 0, "Gap": 1, "Conflict": 0, "Needs review": 1}
