@@ -1,17 +1,17 @@
 {
   "summary": {
-    "goldset": "E:\\Desktop\\DocuMind\\data\\eval\\goldset.v1.jsonl",
-    "n": 18,
+    "goldset": "E:\\Desktop\\DocuMind\\data\\eval\\goldset.v2.jsonl",
+    "n": 41,
     "retrieval": {
-      "hit@k": 0.4375,
-      "recall@k": 0.40625,
-      "mrr": 0.4375
+      "hit@k": 0.9722222222222222,
+      "recall@k": 0.9583333333333334,
+      "mrr": 0.9166666666666666
     },
     "generation": {
-      "faithfulness": 0.42063492063492064,
-      "answer_relevancy": NaN,
-      "context_precision": 0.4444444444055555,
-      "context_recall": 0.2777777777777778
+      "faithfulness": 0.7978422619047618,
+      "answer_relevancy": 0.7444877320409837,
+      "context_precision": 0.8619791666154297,
+      "context_recall": 0.8914614121510673
     },
     "refusal_rate": 1.0
   },
@@ -19,9 +19,9 @@
     {
       "id": "q1",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 0.25
     },
     {
       "id": "q2",
@@ -40,15 +40,15 @@
     {
       "id": "q4",
       "category": "multi-hop",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 0.5
     },
     {
       "id": "q5",
       "category": "factual",
       "hit@k": 1.0,
-      "recall@k": 0.5,
+      "recall@k": 1.0,
       "mrr": 1.0
     },
     {
@@ -61,16 +61,16 @@
     {
       "id": "q7",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
     },
     {
       "id": "q8",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
     },
     {
       "id": "q9",
@@ -87,16 +87,16 @@
     {
       "id": "q11",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
     },
     {
       "id": "q12",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
     },
     {
       "id": "q13",
@@ -108,9 +108,9 @@
     {
       "id": "q14",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
     },
     {
       "id": "q15",
@@ -122,19 +122,174 @@
     {
       "id": "q16",
       "category": "factual",
-      "hit@k": 0.0,
-      "recall@k": 0.0,
-      "mrr": 0.0
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 0.25
     },
     {
       "id": "q17",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "q18",
+      "category": "unanswerable",
+      "refused": true
+    },
+    {
+      "id": "hr01",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr02",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr03",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr04",
       "category": "factual",
       "hit@k": 0.0,
       "recall@k": 0.0,
       "mrr": 0.0
     },
     {
-      "id": "q18",
+      "id": "hr05",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr06",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr07",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr08",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr09",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr10",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr11",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "hr12",
+      "category": "multi-hop",
+      "hit@k": 1.0,
+      "recall@k": 0.5,
+      "mrr": 1.0
+    },
+    {
+      "id": "ne01",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "ne02",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "ne03",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "ne04",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "ne05",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "ne06",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "cw01",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "cw02",
+      "category": "factual",
+      "hit@k": 1.0,
+      "recall@k": 1.0,
+      "mrr": 1.0
+    },
+    {
+      "id": "ua01",
+      "category": "unanswerable",
+      "refused": true
+    },
+    {
+      "id": "ua02",
+      "category": "unanswerable",
+      "refused": true
+    },
+    {
+      "id": "ua03",
       "category": "unanswerable",
       "refused": true
     }
