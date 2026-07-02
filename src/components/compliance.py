@@ -63,14 +63,27 @@ Each requirement is ONE self-contained obligation, phrased as what a regulated
 entity must do. Use only what the passage states — do not invent requirements.
 If the passage contains no obligation, return {"requirements": []}."""
 
+# The Conflict definition spells out that a *weaker stated value* (e.g. a shorter
+# retention period than required) is a Conflict, not Partial. The compliance eval
+# (scripts/run_compliance_eval) showed the judge otherwise softens a 3yr-vs-5yr
+# retention contradiction into Partial — which under-states a real violation, the
+# worst error direction in compliance.
 _JUDGE_SYS = """\
 You are a compliance analyst. Decide whether the company's policy satisfies ONE
 regulatory requirement, using ONLY the provided policy excerpts.
 Return ONLY JSON:
 {"status": "...", "policy_quote": "...", "confidence": 0.0, "rationale": "..."}
 - status is EXACTLY one of: Covered, Partial, Gap, Conflict.
-  Covered = policy fully meets it. Partial = addressed but incomplete.
-  Gap = not addressed at all. Conflict = policy contradicts the requirement.
+  Covered  = the policy fully meets the requirement.
+  Partial  = the policy addresses the requirement but is incomplete, vague, or
+             discretionary, or is silent on some conditions - without stating a
+             concrete rule that violates it.
+  Gap      = the requirement is not addressed at all in the excerpts.
+  Conflict = the policy states a CONCRETE rule or value that directly contradicts
+             the requirement - e.g. it mandates a 3-year retention where 5 years
+             is required. A concrete policy value that is less strict than a
+             concrete required minimum is a Conflict. Mere vagueness, discretion,
+             or silence is Partial or Gap, NOT Conflict.
 - policy_quote = the exact sentence from the excerpts that is your evidence,
   copied verbatim. Empty string if there is no relevant excerpt (a Gap).
 - confidence = 0.0-1.0. rationale = one short sentence.

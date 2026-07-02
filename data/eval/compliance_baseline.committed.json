@@ -1,0 +1,115 @@
+{
+  "summary": {
+    "goldset": "E:\\Desktop\\DocuMind\\.claude\\worktrees\\competent-lederberg-a45588\\data\\eval\\compliance_goldset.v1.jsonl",
+    "judge": "cerebras/gpt-oss-120b",
+    "accuracy": 0.9230769230769231,
+    "macro_f1": 0.9142857142857143,
+    "n": 13,
+    "per_status": {
+      "Covered": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 6
+      },
+      "Partial": {
+        "precision": 1.0,
+        "recall": 0.6666666666666666,
+        "f1": 0.8,
+        "support": 3
+      },
+      "Gap": {
+        "precision": 0.75,
+        "recall": 1.0,
+        "f1": 0.8571428571428571,
+        "support": 3
+      },
+      "Conflict": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1
+      }
+    }
+  },
+  "rows": [
+    {
+      "id": "c1",
+      "expected": "Covered",
+      "predicted": "Covered",
+      "confidence": 1.0
+    },
+    {
+      "id": "c2",
+      "expected": "Covered",
+      "predicted": "Covered",
+      "confidence": 0.99
+    },
+    {
+      "id": "c3",
+      "expected": "Covered",
+      "predicted": "Covered",
+      "confidence": 0.99
+    },
+    {
+      "id": "c4",
+      "expected": "Covered",
+      "predicted": "Covered",
+      "confidence": 1.0
+    },
+    {
+      "id": "c5",
+      "expected": "Covered",
+      "predicted": "Covered",
+      "confidence": 1.0
+    },
+    {
+      "id": "c6",
+      "expected": "Covered",
+      "predicted": "Covered",
+      "confidence": 1.0
+    },
+    {
+      "id": "p1",
+      "expected": "Partial",
+      "predicted": "Partial",
+      "confidence": 0.9
+    },
+    {
+      "id": "p2",
+      "expected": "Partial",
+      "predicted": "Gap",
+      "confidence": 1.0
+    },
+    {
+      "id": "p3",
+      "expected": "Partial",
+      "predicted": "Partial",
+      "confidence": 0.8
+    },
+    {
+      "id": "g1",
+      "expected": "Gap",
+      "predicted": "Gap",
+      "confidence": 0.9
+    },
+    {
+      "id": "g2",
+      "expected": "Gap",
+      "predicted": "Gap",
+      "confidence": 0.9
+    },
+    {
+      "id": "g3",
+      "expected": "Gap",
+      "predicted": "Gap",
+      "confidence": 0.95
+    },
+    {
+      "id": "x1",
+      "expected": "Conflict",
+      "predicted": "Conflict",
+      "confidence": 1.0
+    }
+  ]
+}
