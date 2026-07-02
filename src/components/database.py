@@ -465,3 +465,127 @@ class SupabaseManager:
         except Exception as e:
             logger.error("delete_conversation failed: %s", e)
             return False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Compliance gap-analysis (regulations + compliance_checks tables)
+    #
+    #  `regulations` is SHARED reference data (an RBI circular, ingested once by
+    #  the seed step); `requirements` caches the extracted requirement list so a
+    #  check never re-extracts. `compliance_checks` is per-user (like
+    #  conversations) and stores completed gap tables so re-opening is instant.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def upsert_regulation(
+        self,
+        name: str,
+        regulator: Optional[str] = None,
+        circular_id: Optional[str] = None,
+        requirements: Optional[List] = None,
+        namespace: str = "regulations",
+    ) -> Dict:
+        """Insert/refresh a shared regulation (seed/admin path).
+
+        Upserts on the unique ``name`` so re-seeding updates the same row's
+        cached requirements instead of raising a duplicate-key error.
+        """
+        try:
+            row = {
+                "name": name,
+                "regulator": regulator,
+                "circular_id": circular_id,
+                "namespace": namespace,
+                "requirements": requirements or [],
+                "ingested_at": datetime.now(UTC).isoformat(),
+            }
+            result = (
+                self.service_client.table("regulations")
+                .upsert(row, on_conflict="name")
+                .execute()
+            )
+            return result.data[0] if result.data else row
+        except Exception as e:
+            logger.error("upsert_regulation failed: %s", e)
+            raise CustomException(f"Could not save regulation: {e}") from e
+
+    def list_regulations(self) -> List[Dict]:
+        """List available regulations, newest first. Omits the large
+        ``requirements`` blob — that's fetched per check via get_regulation."""
+        try:
+            result = (
+                self.service_client.table("regulations")
+                .select("id, name, regulator, circular_id, namespace, ingested_at")
+                .order("ingested_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error("list_regulations failed: %s", e)
+            return []
+
+    def get_regulation(self, regulation_id: str) -> Optional[Dict]:
+        """Fetch one regulation incl. its cached ``requirements``, or None."""
+        try:
+            result = (
+                self.service_client.table("regulations")
+                .select("*")
+                .eq("id", regulation_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error("get_regulation failed: %s", e)
+            return None
+
+    def save_compliance_check(
+        self, user_id: str, policy_label: str, regulation_id: Optional[str],
+        summary: Dict, rows: List,
+    ) -> Dict:
+        """Persist a completed gap-check result for *user_id*."""
+        try:
+            result = (
+                self.service_client.table("compliance_checks")
+                .insert({
+                    "user_id": user_id,
+                    "policy_label": policy_label,
+                    "regulation_id": regulation_id,
+                    "summary": summary,
+                    "rows": rows,
+                })
+                .execute()
+            )
+            return result.data[0] if result.data else {}
+        except Exception as e:
+            logger.error("save_compliance_check failed: %s", e)
+            raise CustomException(f"Could not save compliance check: {e}") from e
+
+    def list_compliance_checks(self, user_id: str) -> List[Dict]:
+        """List *user_id*'s past checks, newest first (omits the big ``rows``)."""
+        try:
+            result = (
+                self.service_client.table("compliance_checks")
+                .select("id, policy_label, regulation_id, summary, created_at")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.error("list_compliance_checks failed: %s", e)
+            return []
+
+    def get_compliance_check(self, user_id: str, check_id: str) -> Optional[Dict]:
+        """Fetch one persisted check incl. its ``rows``, scoped to *user_id*."""
+        try:
+            result = (
+                self.service_client.table("compliance_checks")
+                .select("*")
+                .eq("id", check_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error("get_compliance_check failed: %s", e)
+            return None

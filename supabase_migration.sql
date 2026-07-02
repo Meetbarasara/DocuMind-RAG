@@ -1,8 +1,9 @@
 -- DocuMind — Supabase SQL Migration
 -- Run this in: Supabase Dashboard → SQL Editor → New Query → Run
 --
--- Creates the user_documents metadata table + the conversations/messages tables
--- (persistent chat history), all with RLS policies. Idempotent — safe to re-run.
+-- Creates the user_documents metadata table, the conversations/messages tables
+-- (persistent chat history), and the compliance tables (regulations +
+-- compliance_checks), all with RLS policies. Idempotent — safe to re-run.
 
 CREATE TABLE IF NOT EXISTS public.user_documents (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -78,4 +79,57 @@ CREATE POLICY messages_self ON public.messages
     FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 DROP POLICY IF EXISTS messages_service_role ON public.messages;
 CREATE POLICY messages_service_role ON public.messages
+    FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+--  Compliance gap-analysis (KYC): shared regulations + per-user check results
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Regulations are SHARED reference data (e.g. an RBI circular), ingested once by
+-- an admin/seed step. `requirements` caches the extracted, atomic requirement
+-- list ([{id,text,page,section}, ...]) so a check never re-extracts (expensive).
+-- Any authenticated user may read them; only the service-role (backend/seed) writes.
+CREATE TABLE IF NOT EXISTS public.regulations (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         TEXT NOT NULL UNIQUE,
+    regulator    TEXT,                                  -- e.g. 'RBI'
+    circular_id  TEXT,
+    namespace    TEXT NOT NULL DEFAULT 'regulations',   -- shared Pinecone namespace
+    requirements JSONB,
+    ingested_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.regulations ENABLE ROW LEVEL SECURITY;
+-- Shared read: any authenticated user may list/read regulations.
+DROP POLICY IF EXISTS regulations_read ON public.regulations;
+CREATE POLICY regulations_read ON public.regulations
+    FOR SELECT TO authenticated USING (true);
+-- Only the backend (service-role) writes them (seed/admin path).
+DROP POLICY IF EXISTS regulations_service_role ON public.regulations;
+CREATE POLICY regulations_service_role ON public.regulations
+    FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+
+-- A persisted gap-check result, per user (like conversations). `rows` is the
+-- full cited gap table, `summary` the status counts. Persisted so re-opening a
+-- check is instant and never re-burns judge budget.
+CREATE TABLE IF NOT EXISTS public.compliance_checks (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       UUID NOT NULL,
+    policy_label  TEXT,
+    regulation_id UUID REFERENCES public.regulations(id) ON DELETE SET NULL,
+    summary       JSONB,                                 -- {total, Covered, Partial, Gap, Conflict, "Needs review"}
+    rows          JSONB,                                 -- [{requirement, status, policy_quote, ...}, ...]
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS compliance_checks_user_created
+    ON public.compliance_checks (user_id, created_at DESC);
+
+ALTER TABLE public.compliance_checks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS compliance_checks_self ON public.compliance_checks;
+CREATE POLICY compliance_checks_self ON public.compliance_checks
+    FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+DROP POLICY IF EXISTS compliance_checks_service_role ON public.compliance_checks;
+CREATE POLICY compliance_checks_service_role ON public.compliance_checks
     FOR ALL TO service_role USING (true) WITH CHECK (true);

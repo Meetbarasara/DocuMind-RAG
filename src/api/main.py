@@ -4,7 +4,7 @@ Starts the API server with:
     - CORS middleware (allows Streamlit frontend)
     - Request-level logging middleware
     - SlowAPI rate limiting (protects Pinecone + Groq quota)
-    - Auth, Documents, Chat, and Evaluate routers
+    - Auth, Documents, Chat, Conversations, and Compliance routers
     - Health-check endpoint
 """
 
@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.dependencies import get_config, get_pipeline
-from src.api.router import auth, chat, conversations, documents
+from src.api.router import auth, chat, compliance, conversations, documents
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -130,6 +130,7 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(conversations.router)
+app.include_router(compliance.router)
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
