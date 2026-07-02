@@ -109,8 +109,30 @@ def test_evaluate_goldset_maps_verdicts_to_predictions():
          "policy_excerpt": "At onboarding, every customer must submit an Officially Valid Document (OVD).",
          "expected_status": "Covered"},
     ]
-    preds, labels, rows = asyncio.run(evaluate_goldset(gold, _FakeLLM(_keyword_judge)))
+    preds, labels, rows = asyncio.run(evaluate_goldset(gold, _FakeLLM(_keyword_judge), delay=0))
     assert labels == ["Gap", "Conflict", "Covered"]
     assert preds == ["Gap", "Conflict", "Covered"]          # exact wiring, incl. Gap's empty-quote path
     assert compliance_metrics(preds, labels)["accuracy"] == 1.0
     assert [r["id"] for r in rows] == ["g", "x", "c"]
+
+
+def test_transient_needs_review_is_retried():
+    """A free-tier 429 surfaces as 'Needs review'; the harness must retry it so a
+    rate-limited row isn't recorded as a judgment miss."""
+    class _FlakyLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, messages):
+            self.calls += 1
+            if self.calls == 1:                              # first call: unparseable -> Needs review
+                return SimpleNamespace(content="high traffic, no json")
+            return SimpleNamespace(content=json.dumps(
+                {"status": "Gap", "policy_quote": "", "confidence": 0.9, "rationale": "x"}))
+
+    flaky = _FlakyLLM()
+    gold = [{"id": "g", "requirement": "identify beneficial owner",
+             "policy_excerpt": "unrelated", "expected_status": "Gap"}]
+    preds, _, _ = asyncio.run(evaluate_goldset(gold, flaky, delay=0, retries=2))
+    assert preds == ["Gap"]          # recovered on retry, not left as "Needs review"
+    assert flaky.calls == 2

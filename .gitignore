@@ -32,6 +32,7 @@ venv/
 
 # Generated eval baseline (run scripts/run_eval.py; commit a curated one for CI gates)
 data/eval/baseline.json
+data/eval/compliance_baseline.json
 
 # Vector databases
 vector_db/

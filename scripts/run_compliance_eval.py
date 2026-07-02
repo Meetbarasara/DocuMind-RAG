@@ -23,7 +23,7 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
-from src.components.compliance import Requirement, judge_requirement
+from src.components.compliance import NEEDS_REVIEW, Requirement, judge_requirement
 from src.components.config import Config
 from src.components.evalution import (
     compliance_metrics,
@@ -38,10 +38,17 @@ logger = get_logger(__name__)
 _ROOT = Path(__file__).parent.parent
 
 
-async def evaluate_goldset(gold, judge_llm) -> tuple:
-    """Judge each gold row → (predictions, labels, per_row). Sequential on
-    purpose: the free judge tier rate-limits, and a gold set is small, so one
-    call at a time avoids the 429-storm bounded concurrency exists to prevent."""
+async def evaluate_goldset(gold, judge_llm, *, delay: float = 1.0, retries: int = 3) -> tuple:
+    """Judge each gold row → (predictions, labels, per_row).
+
+    Sequential and *paced*: the free judge tier 429s ("queue_exceeded") even
+    under sequential bursts, and judge_requirement swallows that as "Needs
+    review" — which for an eval is a spurious miss, not a judgment error. So we
+    space calls by ``delay`` and retry a "Needs review" up to ``retries`` times
+    with backoff. Every gold row has a definite label, so retrying a Needs-review
+    can only recover a rate-limited row and never masks a real result. Pass
+    ``delay=0`` in tests to keep them fast.
+    """
     preds, labels, rows = [], [], []
     for row in gold:
         req = Requirement(id=row.get("id", "req"), text=row["requirement"])
@@ -54,12 +61,20 @@ async def evaluate_goldset(gold, judge_llm) -> tuple:
             if excerpt else []
         )
         verdict = await judge_requirement(req, docs, judge_llm)
+        attempt = 0
+        while verdict.status == NEEDS_REVIEW and attempt < retries:
+            attempt += 1
+            if delay:
+                await asyncio.sleep(delay * (attempt + 1))     # backoff past the queue limit
+            verdict = await judge_requirement(req, docs, judge_llm)
         preds.append(verdict.status)
         labels.append(row["expected_status"])
         rows.append({
             "id": req.id, "expected": row["expected_status"],
             "predicted": verdict.status, "confidence": verdict.confidence,
         })
+        if delay:
+            await asyncio.sleep(delay)                          # pace to stay under the rate limit
     return preds, labels, rows
 
 
