@@ -318,3 +318,46 @@ def regression_failures(current: Dict, baseline: Dict, tolerance: float = 0.05) 
             if cur_val < base_val - tolerance:
                 failures.append((metric, base_val, cur_val))
     return failures
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Compliance gap-analysis metrics (the judge as a 4-way classifier)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# The KYC judge assigns each requirement one of four statuses. We score it like a
+# classifier against a labeled (requirement, policy_excerpt) -> status gold set:
+# accuracy + macro-F1. Macro (not micro) so a rare-but-critical class like
+# Conflict counts as much as the common Covered — a compliance tool that never
+# flags conflicts should score poorly even if it's "mostly right".
+
+COMPLIANCE_STATUSES = ("Covered", "Partial", "Gap", "Conflict")
+
+
+def compliance_metrics(predictions: List[str], labels: List[str]) -> Dict:
+    """Accuracy + macro-F1 for the gap-analysis judge over the 4 statuses.
+
+    ``predictions`` and ``labels`` are aligned status strings. A prediction
+    outside COMPLIANCE_STATUSES (e.g. "Needs review") never equals a valid label,
+    so it correctly counts as a miss — it's never silently ignored. Macro-F1
+    averages per-status F1 only over statuses that actually appear in ``labels``,
+    so a status absent from the gold set doesn't drag the score down to 0.
+    """
+    if len(predictions) != len(labels):
+        raise ValueError("predictions and labels must be the same length")
+    n = len(labels)
+    accuracy = sum(p == g for p, g in zip(predictions, labels)) / n if n else 0.0
+
+    per_status, f1s = {}, []
+    for status in COMPLIANCE_STATUSES:
+        tp = sum(p == status and g == status for p, g in zip(predictions, labels))
+        fp = sum(p == status and g != status for p, g in zip(predictions, labels))
+        fn = sum(p != status and g == status for p, g in zip(predictions, labels))
+        support = tp + fn
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / support if support else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        per_status[status] = {"precision": precision, "recall": recall, "f1": f1, "support": support}
+        if support:                         # average only over classes present in labels
+            f1s.append(f1)
+    macro_f1 = sum(f1s) / len(f1s) if f1s else 0.0
+    return {"accuracy": accuracy, "macro_f1": macro_f1, "n": n, "per_status": per_status}
