@@ -123,12 +123,16 @@ class Config(BaseSettings):
     # ── Compliance judge model (routed separately from the fast chat LLM) ──
     # The gap-analysis judge ("does this policy satisfy this requirement?") needs
     # stronger reasoning than the fast 8b chat model. Default = free Cerebras
-    # llama-3.3-70b via its OpenAI-compatible endpoint; swappable to groq /
+    # gpt-oss-120b via its OpenAI-compatible endpoint; swappable to groq /
     # openrouter with no code change. OPTIONAL — the compliance feature raises a
     # clear error if the chosen provider's key is missing; the rest of the app
     # runs regardless (so these are NOT in _REQUIRED_SECRETS).
+    # NOTE: llama-3.3-70b (the pivot plan's original pick) is NOT offered on
+    # Cerebras — a live call 404s (model_not_found, verified 2026-07-02). The
+    # account exposes gpt-oss-120b / zai-glm-4.7 / gemma-4-31b; default to the
+    # strongest (gpt-oss-120b, cleanest JSON in json-mode).
     JUDGE_PROVIDER: str = "cerebras"          # cerebras | groq | openrouter
-    JUDGE_MODEL: str = "llama-3.3-70b"
+    JUDGE_MODEL: str = "gpt-oss-120b"
     CEREBRAS_API_KEY: Optional[str] = None
     OPENROUTER_API_KEY: Optional[str] = None
 

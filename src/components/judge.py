@@ -2,7 +2,7 @@
 
 The gap-analysis judge does the hard reasoning ("does this policy clause satisfy
 this RBI requirement?"), which is beyond the fast 8b chat model. We route it to a
-stronger model *without paying*: free Cerebras llama-3.3-70b by default. Cerebras,
+stronger model *without paying*: free Cerebras gpt-oss-120b by default. Cerebras,
 Groq and OpenRouter all expose an OpenAI-compatible API, so one ChatOpenAI with a
 per-provider base_url covers all three — and avoids langchain-cerebras, whose
 0.6.0 pins an old langchain-core that breaks this stack (verified 2026-07-02).

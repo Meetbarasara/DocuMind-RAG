@@ -42,7 +42,7 @@ The insight: don't use one model for everything. Match model strength to step di
 |---|---|---|---|
 | Query rewrite (Ask screen) | easy | Groq `llama-3.1-8b-instant` (existing) | free |
 | Requirement extraction | medium | **judge model** (Cerebras 70B) | free |
-| **The judge** (does policy satisfy requirement?) | **hard** | **Cerebras `llama-3.3-70b`** | free |
+| **The judge** (does policy satisfy requirement?) | **hard** | **Cerebras `gpt-oss-120b`** | free |
 | Embeddings / retrieval / rerank | — | local mpnet + Cohere | free / already keyed |
 
 **Integration (verified 2026-07-02):** reach Cerebras via its **OpenAI-compatible endpoint** using `ChatOpenAI(base_url="https://api.cerebras.ai/v1")` — **not** `langchain-cerebras`, whose 0.6.0 pins langchain-core 0.3.x and downgrades/breaks this 1.x stack (confirmed and reverted). Cerebras, Groq and OpenRouter are all OpenAI-compatible, so one client + a per-provider base_url covers all three.
@@ -184,6 +184,6 @@ Wire it into `run_eval` + the CI gate, exactly like the current retrieval/RAGAS 
 
 ## 10. Open decisions
 
-1. **Judge key** — user is getting a free **Cerebras** key (`llama-3.3-70b`). `JUDGE_MODEL` stays swappable to DeepSeek-via-OpenRouter for a final quality pass.
+1. **Judge key** — free **Cerebras** key, judge = **`gpt-oss-120b`** (verified live 2026-07-02; the account's models are gpt-oss-120b / zai-glm-4.7 / gemma-4-31b — `llama-3.3-70b` 404s, it isn't offered). `JUDGE_MODEL` stays swappable to DeepSeek-via-OpenRouter for a final quality pass.
 2. **Demo material** — no real RBI PDF yet → Phase 1 builds on a **synthetic** internal KYC policy (with deliberate gaps) + a synthetic RBI-KYC-requirements doc based on the real public rules (OVD, periodic updation cadence, V-CIP, record retention, risk categories). Real RBI Master Direction swaps in at Phase 2.
 3. **Streamlit** — kept running until the Next.js app reaches parity, then retired. No big-bang rewrite.

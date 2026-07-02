@@ -19,7 +19,7 @@ def _cfg(**over):
 
 def test_cerebras_default_builds_with_key():
     llm = build_judge_llm(_cfg(CEREBRAS_API_KEY="csk-fake"))
-    assert llm.model_name == "llama-3.3-70b"
+    assert llm.model_name == "gpt-oss-120b"
     assert "api.cerebras.ai" in str(llm.openai_api_base)
 
 

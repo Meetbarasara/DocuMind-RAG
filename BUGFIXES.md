@@ -1179,3 +1179,33 @@ Could not reliably reproduce the flake on demand (it's specifically load-depende
 
 ### Explain it simply (interview answer)
 Two of my tests prove a fix works by racing two slow calls and checking they finished in about the time of *one* slow call, not two — if they overlap (correct), it's fast; if one blocks the other (the bug), it's twice as slow. I'd set the "slow" delay short to keep the suite quick, but that left almost no cushion: on a busy machine, ordinary OS scheduling noise (a few hundredths of a second) was sometimes enough to nudge a perfectly correct run just over my pass/fail line. I made the artificial delay longer — same test, same logic, just a bigger clock to measure against — so that ordinary noise is a much smaller fraction of the margin and stops causing false alarms.
+
+
+## Compliance judge default model didn't exist on Cerebras (`llama-3.3-70b` → 404 `model_not_found`)
+
+**Status:** Fixed 2026-07-02
+
+### Symptom
+The very first *live* run of the KYC gap-analysis engine (against the synthetic RBI + policy PDFs) extracted **0 requirements** and produced an empty gap table. Every judge call logged:
+```
+HTTP/1.1 404 Not Found
+{'message': 'Model llama-3.3-70b does not exist or you do not have access to it.', 'code': 'model_not_found'}
+```
+All mock tests were green — the failure only appeared against the real API.
+
+### Root Cause
+`Config.JUDGE_MODEL` defaulted to `"llama-3.3-70b"` (chosen in the pivot plan from Cerebras's public model list). That model is **not offered on the actual Cerebras account** behind the key. Querying the OpenAI-compatible `/v1/models` endpoint with the key returned only `gpt-oss-120b`, `zai-glm-4.7`, `gemma-4-31b` — no Llama at all. So the judge factory built a `ChatOpenAI(model="llama-3.3-70b", base_url="https://api.cerebras.ai/v1")` that 404s on the first call. The engine's per-chunk `try/except` swallowed it into "extraction failed on a chunk" warnings, so nothing crashed — it just silently produced nothing.
+
+### Fix
+Changed the default to `JUDGE_MODEL = "gpt-oss-120b"` — the strongest model actually available on the account (120B, cleanest JSON in json-mode of the three, confirmed with a live probe). Also updated the pinning unit test, the `judge.py` docstring, `.env.example`, and the plan doc. `JUDGE_MODEL`/`JUDGE_PROVIDER` stay env-overridable, so swapping to `zai-glm-4.7`, `gemma-4-31b`, or a paid provider is a one-line `.env` change.
+
+### Why this approach
+A provider's model catalog is account- and time-specific, so the honest fix is to default to a model this key actually has and keep it swappable, not to hard-code another guess. `gpt-oss-120b` matches the plan's intent (route the hard judging step to a strong model). The empirical `/v1/models` list is the source of truth — guessing another Llama alias would have risked the same 404.
+
+### Verification
+- Live re-run with `gpt-oss-120b`: extracted **15 requirements** and produced a fully cited gap table (5 Covered / 6 Partial / 4 Gap), zero "Needs review" rows; every Covered/Partial row's quote matched back to a real policy chunk.
+- Probed all three available models with the judge's real JSON-mode call — all returned valid JSON and the correct verdict on a sample; `gpt-oss-120b` was cleanest.
+- Full suite **184 passed**; ruff + pyflakes clean on the changed files.
+
+### Explain it simply (interview answer)
+My code was set up to ask a specific AI model to be the "judge," but I'd written down a name for it that isn't available on my account — so every request bounced back "no such model." My automated tests didn't catch it because they fake the AI's reply instead of actually calling it; the problem only showed up the first time I ran it for real. I asked the service "which models *can* I use?", picked the strongest one it actually offers, and made the name easy to change later. Now the same run that produced nothing produces a full, cited compliance report.
