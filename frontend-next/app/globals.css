@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+:root {
+  --fg: #e6ebf5;
+  --muted: #93a1b8;
+  --accent: 99 102 241;      /* indigo-500 */
+}
+
+@theme inline {
+  --color-background: #0b1120;
+  --color-foreground: var(--fg);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  color: var(--fg);
+  /* Deep slate canvas with two soft indigo/cyan light sources (the plan's hero) */
+  background:
+    radial-gradient(1100px 600px at 12% -12%, rgba(99, 102, 241, 0.22), transparent 60%),
+    radial-gradient(900px 520px at 105% 0%, rgba(56, 189, 248, 0.12), transparent 55%),
+    linear-gradient(180deg, #0b1120 0%, #0b1120 45%, #090d18 100%);
+  background-repeat: no-repeat;
+  min-height: 100vh;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Glass surfaces — cards/panels only, never behind small body text (WCAG AA) */
+.glass {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 40px rgba(2, 6, 23, 0.5);
+}
+.glass-soft {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.transition-glass {
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+/* Status accent tokens: one class sets --c (an "r g b" triple) reused by chips,
+   the row's left bar, and the summary cards. Covered/Partial/Gap/Conflict/Review. */
+.st-covered {
+  --c: 16 185 129;
+}
+.st-partial {
+  --c: 245 158 11;
+}
+.st-gap {
+  --c: 244 63 94;
+}
+.st-conflict {
+  --c: 167 139 250;
+}
+.st-review {
+  --c: 148 163 184;
+}
+.st-chip {
+  color: rgb(var(--c));
+  background: rgba(var(--c) / 0.14);
+  border: 1px solid rgba(var(--c) / 0.4);
+}
+.st-fg {
+  color: rgb(var(--c));
+}
+.st-bar {
+  background: rgb(var(--c));
+}
+.st-ring {
+  box-shadow: inset 0 0 0 1px rgba(var(--c) / 0.35);
+}
+
+.accent-btn {
+  background: rgb(var(--accent));
+  color: #fff;
+  transition: filter 0.15s ease, transform 0.05s ease;
+}
+.accent-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+.accent-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.accent-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
