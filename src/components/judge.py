@@ -62,7 +62,12 @@ def build_judge_llm(config: Config, *, json_mode: bool = True) -> ChatOpenAI:
         temperature=0,              # deterministic verdicts
         api_key=api_key,
         base_url=base_url,
-        max_tokens=1024,
-        timeout=60,
+        # Reasoning models (e.g. gpt-oss) spend output budget *thinking* before
+        # emitting any JSON. On dense legal text ~1000 reasoning tokens hit a
+        # 1024 cap and truncated the JSON entirely, so extraction/judging of a
+        # real RBI Master Direction silently failed on many chunks. 4096 leaves
+        # ample room for the reasoning pass plus the (small) JSON payload.
+        max_tokens=4096,
+        timeout=120,
         model_kwargs=model_kwargs,
     )
