@@ -143,6 +143,7 @@ async def extract_requirements(chunks: List[Document], judge_llm) -> List[Requir
     RBI citation is carried from origin, not asked of the judge later.
     """
     out: List[Requirement] = []
+    seen: set = set()                       # normalized texts already kept (dedup below)
     for ch in chunks:
         page = ch.metadata.get("page_number")
         try:
@@ -159,6 +160,13 @@ async def extract_requirements(chunks: List[Document], judge_llm) -> List[Requir
             text = (r.get("text") or "").strip() if isinstance(r, dict) else ""
             if not text:
                 continue
+            # Dedup verbatim re-extractions: a long (real) regulation page splits
+            # into overlapping chunks (64-token overlap), so a requirement near a
+            # boundary can be extracted twice. Keep the first (earliest page).
+            key = _norm(text)
+            if key in seen:
+                continue
+            seen.add(key)
             out.append(Requirement(
                 id=f"req-{len(out) + 1}",
                 text=text,

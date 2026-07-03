@@ -68,6 +68,18 @@ async def test_extract_skips_bad_chunk_without_crashing():
     assert [r.text for r in reqs] == ["Do X"]  # bad chunk skipped, not fatal
 
 
+@pytest.mark.asyncio
+async def test_extract_dedups_verbatim_requirements_across_chunks():
+    # A long page splits into overlapping chunks, so the same requirement can be
+    # extracted from two of them — it must be kept once, not duplicated.
+    llm = _FakeLLM('{"requirements":[{"text":"Retain KYC records for five years"}]}')
+    chunks = [Document(page_content="chunk A", metadata={"page_number": 1}),
+              Document(page_content="chunk B", metadata={"page_number": 2})]
+    reqs = await extract_requirements(chunks, llm)
+    assert [r.text for r in reqs] == ["Retain KYC records for five years"]
+    assert reqs[0].page == 1                # kept the first occurrence
+
+
 # ── The judge ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
