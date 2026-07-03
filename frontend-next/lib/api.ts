@@ -4,7 +4,12 @@
 
 import { demoStream, DEMO_REGULATION } from "./demoData";
 import type { Session } from "./session";
-import type { Regulation, StreamEvent } from "./types";
+import type {
+  CheckSummary,
+  PersistedCheck,
+  Regulation,
+  StreamEvent,
+} from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -173,6 +178,21 @@ export async function uploadPolicy(
     if (job.status === "failed") throw new Error(job.error || "Ingestion failed.");
   }
   throw new Error("Upload is taking too long — check back later.");
+}
+
+export async function listChecks(token: string): Promise<CheckSummary[]> {
+  const res = await fetch(`${API_BASE}/api/compliance/checks`, { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(await errorDetail(res, `Could not load checks (HTTP ${res.status}).`));
+  const data = await res.json();
+  return (data.checks || []) as CheckSummary[];
+}
+
+export async function getCheck(token: string, id: string): Promise<PersistedCheck> {
+  const res = await fetch(`${API_BASE}/api/compliance/checks/${id}`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `Could not load check (HTTP ${res.status}).`));
+  return (await res.json()) as PersistedCheck;
 }
 
 export { DEMO_REGULATION };

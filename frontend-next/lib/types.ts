@@ -35,6 +35,18 @@ export interface Regulation {
   regulator?: string | null;
 }
 
+export interface CheckSummary {
+  id: string;
+  policy_label: string;
+  regulation_id: string | null;
+  summary: Summary;
+  created_at: string;
+}
+
+export interface PersistedCheck extends CheckSummary {
+  rows: GapRow[];
+}
+
 export type StreamEvent =
   | {
       type: "summary_init";

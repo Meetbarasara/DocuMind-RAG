@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   API_BASE,
   DEMO_REGULATION,
+  getCheck,
+  listChecks,
   listDocuments,
   listRegulations,
   runCheck,
@@ -16,7 +18,8 @@ import {
   setSession as saveSession,
   type Session,
 } from "@/lib/session";
-import type { GapRow as Row, Regulation } from "@/lib/types";
+import type { CheckSummary, GapRow as Row, Regulation } from "@/lib/types";
+import ChecksHistory from "./ChecksHistory";
 import GapRowCard from "./GapRow";
 import PolicyUpload from "./PolicyUpload";
 import SignIn from "./SignIn";
@@ -43,6 +46,7 @@ export default function CheckHero() {
   const [regulations, setRegulations] = useState<Regulation[]>([]);
   const [regId, setRegId] = useState("");
   const [docs, setDocs] = useState<DocInfo[]>([]);
+  const [checks, setChecks] = useState<CheckSummary[]>([]);
   const [liveError, setLiveError] = useState<string | null>(null);
 
   // Results
@@ -50,16 +54,18 @@ export default function CheckHero() {
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [regName, setRegName] = useState("");
+  const [activeCheckId, setActiveCheckId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => setSess(getSession()), []);            // rehydrate once
 
-  // When signed in, load the regulation list + the user's uploaded docs.
+  // When signed in, load the regulation list, the user's docs, and past checks.
   useEffect(() => {
     if (!session) {
       setRegulations([]);
       setDocs([]);
+      setChecks([]);
       return;
     }
     let alive = true;
@@ -73,7 +79,10 @@ export default function CheckHero() {
       .catch((e) => alive && setLiveError(e instanceof Error ? e.message : String(e)));
     listDocuments(session.accessToken)
       .then((d) => alive && setDocs(d))
-      .catch(() => {/* non-fatal: the docs list is a convenience */});
+      .catch(() => {/* non-fatal */});
+    listChecks(session.accessToken)
+      .then((c) => alive && setChecks(c))
+      .catch(() => {/* non-fatal */});
     return () => {
       alive = false;
     };
@@ -102,6 +111,7 @@ export default function CheckHero() {
     clearSession();
     setSess(null);
     setRegId("");
+    setActiveCheckId(null);
   }
   function reloadDocs() {
     if (session) listDocuments(session.accessToken).then(setDocs).catch(() => {});
@@ -115,6 +125,7 @@ export default function CheckHero() {
     setError(null);
     setTotal(0);
     setRegName("");
+    setActiveCheckId(null);
     setPhase("running");
     try {
       await runCheck(
@@ -139,10 +150,30 @@ export default function CheckHero() {
         ac.signal,
       );
       if (!ac.signal.aborted) setPhase((p) => (p === "running" ? "done" : p));
+      // A live run persists server-side — refresh the history so it shows up.
+      if (mode === "live" && session && !ac.signal.aborted) {
+        listChecks(session.accessToken).then(setChecks).catch(() => {});
+      }
     } catch (err) {
       if (ac.signal.aborted) return;
       setError(err instanceof Error ? err.message : "Check failed.");
       setPhase("error");
+    }
+  }
+
+  async function openCheck(id: string) {
+    if (!session) return;
+    abortRef.current?.abort();
+    setError(null);
+    setActiveCheckId(id);
+    try {
+      const check = await getCheck(session.accessToken, id);
+      setRows(check.rows || []);
+      setTotal(check.summary?.total ?? (check.rows?.length || 0));
+      setRegName(check.policy_label || "");
+      setPhase("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open that check.");
     }
   }
 
@@ -205,6 +236,7 @@ export default function CheckHero() {
               </label>
               <PolicyUpload token={session.accessToken} docs={docs} onChanged={reloadDocs} />
             </div>
+            <ChecksHistory checks={checks} activeId={activeCheckId} onOpen={openCheck} />
           </div>
         ) : (
           <div className="space-y-3">
@@ -232,7 +264,8 @@ export default function CheckHero() {
             <span>
               {regName ? (
                 <>
-                  Checking <span className="text-[var(--fg)]">{regName}</span>
+                  {phase === "running" ? "Checking" : "Showing"}{" "}
+                  <span className="text-[var(--fg)]">{regName}</span>
                 </>
               ) : (
                 "Preparing…"
