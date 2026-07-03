@@ -4,6 +4,16 @@
 
 ---
 
+## Status — 2026-07-04 (Phase 1 ✅ complete · Phase 2 in progress · Phase 3 deferred)
+
+**Phase 1 is done and its exit criteria are met:** a real streamed, cited gap table renders in the new Next.js UI, and a labeled gold set reports a measured accuracy gated in CI. Built + verified — `doc_type`/seed path, cached requirement extraction (with dedup), per-requirement retrieval, the swappable Cerebras judge with robust JSON, `POST /api/compliance/check` (SSE), persisted results, the compliance gold set + **macro-F1 0.91** (CI-gated), and the glass hero screen. The engine + eval + UI were **live-proven end-to-end** on the real stack (a real cited check incl. a Conflict, plus Ask + history), and a **real RBI Master Direction chapter** was seeded (`regulation_id 95919385…`, 34 requirements).
+
+**Phase 2 progress:** Ask screen ✅ · real RBI Master Direction PDF ✅ (seeded). **Remaining Phase 2:** change-tracking (diff a new circular vs the old, re-check only what changed), the Library screen, clause-level citation verification. **Follow-ups:** retire Streamlit once at parity, doc-delete control in the new UI, clause/section-aware chunking for legal text, re-seed the real RBI reg complete (with the `max_tokens` fix). **Phase 3 (deployment) stays deferred** until quality/latency are demo-ready.
+
+> This plan is the **design**; the running **status + gotchas** live in the memory file `project_documind_slimming_phase.md`. Current code: local `master` = `8fffc1c`; PR #2 (`compliance-pivot` → `master`).
+
+---
+
 ## 0. The wedge (scope discipline)
 
 **One sentence:** a compliance officer uploads their internal KYC policy, picks an RBI circular, and gets a **cited, requirement-by-requirement gap table** (Covered / Partial / Gap / Conflict) in seconds — with the exact policy clause and RBI clause shown side by side.
