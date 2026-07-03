@@ -1,10 +1,25 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { API_BASE, DEMO_REGULATION, runCheck } from "@/lib/api";
-import type { GapRow as Row } from "@/lib/types";
+import {
+  API_BASE,
+  DEMO_REGULATION,
+  listDocuments,
+  listRegulations,
+  runCheck,
+  type DocInfo,
+} from "@/lib/api";
+import {
+  clearSession,
+  getSession,
+  setSession as saveSession,
+  type Session,
+} from "@/lib/session";
+import type { GapRow as Row, Regulation } from "@/lib/types";
 import GapRowCard from "./GapRow";
+import PolicyUpload from "./PolicyUpload";
+import SignIn from "./SignIn";
 import SummaryCards from "./SummaryCards";
 
 type Phase = "idle" | "running" | "done" | "error";
@@ -15,16 +30,54 @@ const reqNum = (id: string) => {
   return Number.isNaN(n) ? 1e9 : n;
 };
 
+function runLabel(phase: Phase, checked: number, total: number) {
+  if (phase !== "running") return "Run check";
+  return total ? `Checking… ${checked}/${total}` : "Checking…";
+}
+
 export default function CheckHero() {
   const [mode, setMode] = useState<Mode>("demo");
-  const [token, setToken] = useState("");
-  const [regulationId, setRegulationId] = useState("");
+
+  // Live session + its data
+  const [session, setSess] = useState<Session | null>(null);
+  const [regulations, setRegulations] = useState<Regulation[]>([]);
+  const [regId, setRegId] = useState("");
+  const [docs, setDocs] = useState<DocInfo[]>([]);
+  const [liveError, setLiveError] = useState<string | null>(null);
+
+  // Results
   const [phase, setPhase] = useState<Phase>("idle");
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [regName, setRegName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => setSess(getSession()), []);            // rehydrate once
+
+  // When signed in, load the regulation list + the user's uploaded docs.
+  useEffect(() => {
+    if (!session) {
+      setRegulations([]);
+      setDocs([]);
+      return;
+    }
+    let alive = true;
+    setLiveError(null);
+    listRegulations(session.accessToken)
+      .then((r) => {
+        if (!alive) return;
+        setRegulations(r);
+        setRegId((prev) => prev || r[0]?.id || "");
+      })
+      .catch((e) => alive && setLiveError(e instanceof Error ? e.message : String(e)));
+    listDocuments(session.accessToken)
+      .then((d) => alive && setDocs(d))
+      .catch(() => {/* non-fatal: the docs list is a convenience */});
+    return () => {
+      alive = false;
+    };
+  }, [session]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {
@@ -39,8 +92,20 @@ export default function CheckHero() {
     [rows],
   );
 
-  const canRun =
-    phase !== "running" && (mode === "demo" || regulationId.trim().length > 0);
+  const canRun = phase !== "running" && (mode === "demo" || (!!session && !!regId));
+
+  function handleSignedIn(s: Session) {
+    saveSession(s);
+    setSess(s);
+  }
+  function handleSignOut() {
+    clearSession();
+    setSess(null);
+    setRegId("");
+  }
+  function reloadDocs() {
+    if (session) listDocuments(session.accessToken).then(setDocs).catch(() => {});
+  }
 
   async function run() {
     abortRef.current?.abort();
@@ -54,9 +119,9 @@ export default function CheckHero() {
     try {
       await runCheck(
         {
-          regulationId: mode === "demo" ? DEMO_REGULATION.id : regulationId.trim(),
+          regulationId: mode === "demo" ? DEMO_REGULATION.id : regId,
           demo: mode === "demo",
-          token: token.trim() || undefined,
+          token: session?.accessToken,
         },
         (e) => {
           if (ac.signal.aborted) return;
@@ -83,62 +148,71 @@ export default function CheckHero() {
 
   const checked = rows.length;
   const pct = total ? Math.round((checked / total) * 100) : 0;
+  const label = runLabel(phase, checked, total);
 
   return (
     <div className="space-y-6">
-      {/* Control panel */}
-      <div className="glass rounded-3xl p-5 sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
-              Regulation
-            </label>
-            {mode === "demo" ? (
-              <div className="glass-soft flex items-center gap-2 rounded-xl px-3.5 py-2.5">
-                <span className="st-conflict st-bar h-2 w-2 rounded-full" />
-                <span className="text-sm text-[var(--fg)]">
-                  {DEMO_REGULATION.name}
-                </span>
-              </div>
-            ) : (
-              <input
-                value={regulationId}
-                onChange={(e) => setRegulationId(e.target.value)}
-                placeholder="regulation_id (from the seed step)"
-                className="glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-white/30 focus:border-white/25 sm:w-80"
-              />
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            <ModeToggle mode={mode} setMode={setMode} disabled={phase === "running"} />
-            <button
-              onClick={run}
-              disabled={!canRun}
-              className="accent-btn rounded-xl px-5 py-2.5 text-sm font-semibold"
-            >
-              {phase === "running"
-                ? total
-                  ? `Checking… ${checked}/${total}`
-                  : "Checking…"
-                : "Run check"}
-            </button>
-          </div>
+      <div className="glass space-y-4 rounded-3xl p-5 sm:p-6">
+        <div className="flex items-center justify-between gap-3">
+          <ModeToggle mode={mode} setMode={setMode} disabled={phase === "running"} />
+          {mode === "demo" && <RunButton onClick={run} disabled={!canRun} label={label} />}
         </div>
 
-        {mode === "live" && (
-          <div className="mt-4">
-            <input
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Access token (Bearer JWT)"
-              type="password"
-              className="glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-white/30 focus:border-white/25"
-            />
-            <p className="mt-2 text-xs text-[var(--muted)]">
-              Live mode calls <span className="font-mono">{API_BASE}</span>. Your
-              policy must already be uploaded to your account.
+        {mode === "demo" ? (
+          <DemoBody />
+        ) : session ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-[var(--muted)]">
+                Signed in as <span className="text-[var(--fg)]">{session.email}</span>
+              </div>
+              <button
+                onClick={handleSignOut}
+                className="text-xs text-[var(--muted)] transition-colors hover:text-[var(--fg)]"
+              >
+                Sign out
+              </button>
+            </div>
+            {liveError && <p className="st-gap st-fg text-sm">{liveError}</p>}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                  Regulation
+                </label>
+                {regulations.length ? (
+                  <select
+                    value={regId}
+                    onChange={(e) => setRegId(e.target.value)}
+                    className="glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none focus:border-white/25 sm:w-80"
+                  >
+                    {regulations.map((r) => (
+                      <option key={r.id} value={r.id} className="bg-[#0b1120]">
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-sm text-[var(--muted)]">
+                    No regulations seeded yet — run the seed step.
+                  </p>
+                )}
+              </div>
+              <RunButton onClick={run} disabled={!canRun} label={label} />
+            </div>
+            <div>
+              <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                Your policy
+              </label>
+              <PolicyUpload token={session.accessToken} docs={docs} onChanged={reloadDocs} />
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--muted)]">
+              Sign in to check your own policy. Calls{" "}
+              <span className="font-mono">{API_BASE}</span>.
             </p>
+            <SignIn onSignedIn={handleSignedIn} />
           </div>
         )}
       </div>
@@ -154,8 +228,6 @@ export default function CheckHero() {
       ) : (
         <div className="space-y-5">
           <SummaryCards counts={counts} />
-
-          {/* Progress */}
           <div className="flex items-center justify-between text-sm text-[var(--muted)]">
             <span>
               {regName ? (
@@ -167,7 +239,9 @@ export default function CheckHero() {
               )}
             </span>
             <span className="tabular-nums">
-              {phase === "running" ? `Checked ${checked} of ${total || "…"}` : `${checked} requirements`}
+              {phase === "running"
+                ? `Checked ${checked} of ${total || "…"}`
+                : `${checked} requirements`}
             </span>
           </div>
           <div className="h-1 overflow-hidden rounded-full bg-white/10">
@@ -176,8 +250,6 @@ export default function CheckHero() {
               style={{ width: `${phase === "done" ? 100 : pct}%` }}
             />
           </div>
-
-          {/* Rows */}
           <div className="space-y-2.5">
             {sortedRows.map((row) => (
               <GapRowCard key={row.requirement_id} row={row} />
@@ -185,6 +257,40 @@ export default function CheckHero() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function RunButton({
+  onClick,
+  disabled,
+  label,
+}: {
+  onClick: () => void;
+  disabled: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="accent-btn shrink-0 rounded-xl px-5 py-2.5 text-sm font-semibold"
+    >
+      {label}
+    </button>
+  );
+}
+
+function DemoBody() {
+  return (
+    <div>
+      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+        Regulation
+      </label>
+      <div className="glass-soft flex w-fit items-center gap-2 rounded-xl px-3.5 py-2.5">
+        <span className="st-conflict st-bar h-2 w-2 rounded-full" />
+        <span className="text-sm text-[var(--fg)]">{DEMO_REGULATION.name}</span>
+      </div>
     </div>
   );
 }

@@ -3,7 +3,10 @@
 // same code powers demo mode and live mode.
 
 import { demoStream, DEMO_REGULATION } from "./demoData";
+import type { Session } from "./session";
 import type { Regulation, StreamEvent } from "./types";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
@@ -72,8 +75,8 @@ export async function runCheck(
   if (!res.ok || !res.body) {
     throw new Error(
       res.status === 401
-        ? "Not signed in (401). Add a token in Live settings."
-        : `Check failed (HTTP ${res.status}).`,
+        ? "Your session expired — sign in again."
+        : await errorDetail(res, `Check failed (HTTP ${res.status}).`),
     );
   }
   await readSSE(res.body, onEvent);
@@ -83,9 +86,93 @@ export async function listRegulations(token?: string): Promise<Regulation[]> {
   const res = await fetch(`${API_BASE}/api/compliance/regulations`, {
     headers: authHeaders(token),
   });
-  if (!res.ok) throw new Error(`Could not load regulations (HTTP ${res.status}).`);
+  if (!res.ok) throw new Error(await errorDetail(res, `Could not load regulations (HTTP ${res.status}).`));
   const data = await res.json();
   return (data.regulations || []) as Regulation[];
+}
+
+// ── Auth + documents (self-serve Live mode) ─────────────────────────────────
+
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  try {
+    const data = await res.json();
+    return (data && (data.detail || data.message)) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export interface DocInfo {
+  filename: string;
+  file_type?: string;
+  size_bytes?: number;
+  uploaded_at?: string;
+}
+
+export async function login(email: string, password: string): Promise<Session> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Invalid email or password."));
+  const data = await res.json();
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    email: data.email,
+  };
+}
+
+export async function signup(email: string, password: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/auth/signup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Sign-up failed."));
+  const data = await res.json();
+  return (data.message as string) || "Account created. Check your email, then sign in.";
+}
+
+export async function listDocuments(token: string): Promise<DocInfo[]> {
+  const res = await fetch(`${API_BASE}/api/documents/`, { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(await errorDetail(res, `Could not load documents (HTTP ${res.status}).`));
+  const data = await res.json();
+  return (data.documents || []) as DocInfo[];
+}
+
+/** Upload a policy file, then poll the background ingestion job to completion.
+ *  Returns the chunk count on success; throws with a readable message on
+ *  rejection, failure, or timeout. */
+export async function uploadPolicy(
+  file: File,
+  token: string,
+  onStatus?: (status: string) => void,
+): Promise<number> {
+  const form = new FormData();
+  form.append("file", file);
+  // Do NOT set Content-Type — the browser adds the multipart boundary itself.
+  const res = await fetch(`${API_BASE}/api/documents/upload`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: form,
+  });
+  if (res.status !== 202) throw new Error(await errorDetail(res, `Upload failed (HTTP ${res.status}).`));
+  const { job_id: jobId } = await res.json();
+
+  for (let i = 0; i < 150; i++) {            // ~5 min ceiling at 2s/poll
+    await sleep(2000);
+    const s = await fetch(`${API_BASE}/api/documents/upload-status/${jobId}`, {
+      headers: authHeaders(token),
+    });
+    if (!s.ok) throw new Error(await errorDetail(s, `Status check failed (HTTP ${s.status}).`));
+    const job = await s.json();
+    onStatus?.(job.status);
+    if (job.status === "completed") return job.chunks_ingested ?? 0;
+    if (job.status === "failed") throw new Error(job.error || "Ingestion failed.");
+  }
+  throw new Error("Upload is taking too long — check back later.");
 }
 
 export { DEMO_REGULATION };
