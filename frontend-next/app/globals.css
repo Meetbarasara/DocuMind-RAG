@@ -11,9 +11,12 @@
   --color-foreground: var(--fg);
 }
 
-html,
-body {
-  height: 100%;
+html {
+  /* Dark base behind everything. The body gradient sits on top, but content
+     taller than one viewport used to overflow onto the browser's white default
+     because body was capped at height:100%. Now body grows with its content and
+     this solid color covers the viewport + any overscroll. */
+  background-color: #0b1120;
 }
 
 body {
