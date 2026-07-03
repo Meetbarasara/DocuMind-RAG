@@ -57,6 +57,21 @@ export type StreamEvent =
   | { type: "summary_final"; summary: Summary; check_id: string | null }
   | { type: "error"; message: string };
 
+// SSE events from POST /api/chat/query/stream (the Ask screen).
+export type ChatEvent =
+  | { type: "sources"; sources: ChatSource[] }
+  | { type: "token"; content: string }
+  | { type: "citation_verification"; verified?: number; total?: number }
+  | { type: "meta"; run_id?: string }
+  | { type: "error"; message: string };
+
+export interface ChatSource {
+  filename?: string;
+  page?: number | string;
+  content?: string;
+  [k: string]: unknown;
+}
+
 export const STATUS_ORDER: Status[] = [
   "Covered",
   "Partial",

@@ -5,6 +5,7 @@
 import { demoStream, DEMO_REGULATION } from "./demoData";
 import type { Session } from "./session";
 import type {
+  ChatEvent,
   CheckSummary,
   PersistedCheck,
   Regulation,
@@ -28,9 +29,9 @@ function authHeaders(token?: string): Record<string, string> {
 }
 
 /** Parse a Fetch SSE body, invoking onEvent for each `data:` JSON payload. */
-async function readSSE(
+async function readSSE<T>(
   body: ReadableStream<Uint8Array>,
-  onEvent: (e: StreamEvent) => void,
+  onEvent: (e: T) => void,
 ) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -51,7 +52,7 @@ async function readSSE(
       const data = dataLine.slice(5).trim();
       if (data === "[DONE]") return;
       try {
-        onEvent(JSON.parse(data) as StreamEvent);
+        onEvent(JSON.parse(data) as T);
       } catch {
         /* ignore keep-alives / malformed frames */
       }
@@ -193,6 +194,30 @@ export async function getCheck(token: string, id: string): Promise<PersistedChec
   });
   if (!res.ok) throw new Error(await errorDetail(res, `Could not load check (HTTP ${res.status}).`));
   return (await res.json()) as PersistedCheck;
+}
+
+/** Stream an answer to *question* over the user's own documents (the Ask
+ *  screen), reusing POST /api/chat/query/stream. */
+export async function askStream(
+  question: string,
+  token: string,
+  onEvent: (e: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/chat/query/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
+    body: JSON.stringify({ question }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(
+      res.status === 401
+        ? "Your session expired — sign in again."
+        : await errorDetail(res, `Ask failed (HTTP ${res.status}).`),
+    );
+  }
+  await readSSE<ChatEvent>(res.body, onEvent);
 }
 
 export { DEMO_REGULATION };

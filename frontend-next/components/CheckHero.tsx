@@ -12,12 +12,7 @@ import {
   runCheck,
   type DocInfo,
 } from "@/lib/api";
-import {
-  clearSession,
-  getSession,
-  setSession as saveSession,
-  type Session,
-} from "@/lib/session";
+import type { Session } from "@/lib/session";
 import type { CheckSummary, GapRow as Row, Regulation } from "@/lib/types";
 import ChecksHistory from "./ChecksHistory";
 import GapRowCard from "./GapRow";
@@ -38,11 +33,18 @@ function runLabel(phase: Phase, checked: number, total: number) {
   return total ? `Checking… ${checked}/${total}` : "Checking…";
 }
 
-export default function CheckHero() {
+export default function CheckHero({
+  session,
+  onSignedIn,
+  onSignOut,
+}: {
+  session: Session | null;
+  onSignedIn: (s: Session) => void;
+  onSignOut: () => void;
+}) {
   const [mode, setMode] = useState<Mode>("demo");
 
-  // Live session + its data
-  const [session, setSess] = useState<Session | null>(null);
+  // Live data (session is owned by the app shell and passed in)
   const [regulations, setRegulations] = useState<Regulation[]>([]);
   const [regId, setRegId] = useState("");
   const [docs, setDocs] = useState<DocInfo[]>([]);
@@ -57,8 +59,6 @@ export default function CheckHero() {
   const [activeCheckId, setActiveCheckId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => setSess(getSession()), []);            // rehydrate once
 
   // When signed in, load the regulation list, the user's docs, and past checks.
   useEffect(() => {
@@ -103,15 +103,10 @@ export default function CheckHero() {
 
   const canRun = phase !== "running" && (mode === "demo" || (!!session && !!regId));
 
-  function handleSignedIn(s: Session) {
-    saveSession(s);
-    setSess(s);
-  }
   function handleSignOut() {
-    clearSession();
-    setSess(null);
     setRegId("");
     setActiveCheckId(null);
+    onSignOut();
   }
   function reloadDocs() {
     if (session) listDocuments(session.accessToken).then(setDocs).catch(() => {});
@@ -244,7 +239,7 @@ export default function CheckHero() {
               Sign in to check your own policy. Calls{" "}
               <span className="font-mono">{API_BASE}</span>.
             </p>
-            <SignIn onSignedIn={handleSignedIn} />
+            <SignIn onSignedIn={onSignedIn} />
           </div>
         )}
       </div>
