@@ -113,13 +113,16 @@ class RAGPipeline:
         file_path: str,
         user_id: str = "default",
         namespace: str = "",
+        clause_aware: bool = False,
     ) -> int:
         """Parse → chunk → embed → upsert a file into Pinecone.
 
         Args:
-            file_path:  Absolute or relative path to the document.
-            user_id:    User identifier (used in namespace strategy).
-            namespace:  Pinecone namespace. Defaults to *user_id* if empty.
+            file_path:    Absolute or relative path to the document.
+            user_id:      User identifier (used in namespace strategy).
+            namespace:    Pinecone namespace. Defaults to *user_id* if empty.
+            clause_aware: Use clause/section-aware chunking (for legal/regulation
+                          text). Default False keeps plain token-window chunking.
 
         Returns:
             Number of chunks upserted.
@@ -138,7 +141,7 @@ class RAGPipeline:
 
             # ── Step 1: Parse & chunk ────────────────────────────────────
             elements = self.processor.process_documents(file_path)
-            docs = self.processor.build_langchain_documents(elements)
+            docs = self.processor.build_langchain_documents(elements, clause_aware=clause_aware)
             logger.info("Parsed %d chunks from %s", len(docs), file_path)
 
             if not docs:

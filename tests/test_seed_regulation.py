@@ -30,8 +30,8 @@ class FakePipeline:
         self.config = config
         self.ingested = []
 
-    def ingest_file(self, path, namespace=""):
-        self.ingested.append((path, namespace))
+    def ingest_file(self, path, namespace="", clause_aware=False):
+        self.ingested.append((path, namespace, clause_aware))
         return 3
 
 
@@ -56,8 +56,10 @@ def test_seed_extracts_ingests_and_caches_requirements():
         namespace="regulations", config=config, pipeline=pipeline, judge_llm=FakeJudge(), db=db,
     ))
 
-    # Ingested into the SHARED regulations namespace (not a user namespace).
+    # Ingested into the SHARED regulations namespace (not a user namespace),
+    # with clause/section-aware chunking (regulations are legal text).
     assert pipeline.ingested and pipeline.ingested[0][1] == "regulations"
+    assert pipeline.ingested[0][2] is True
 
     # Requirements cached as a list of dicts with exactly the keys the check
     # route reconstructs from (dataclasses.asdict of Requirement).

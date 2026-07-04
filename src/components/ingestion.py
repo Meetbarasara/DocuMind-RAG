@@ -12,8 +12,9 @@ add a vision-model description.
 """
 
 import hashlib
+import re
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
@@ -31,6 +32,91 @@ _MIN_CHUNK_CHARS = 10
 _MIN_IMAGE_BYTES = 3000
 
 
+# ── Clause/section-aware chunking for legal text ────────────────────────────
+#
+# A line that STARTS a new clause/section in a regulation: a numbered/lettered
+# marker or a heading keyword. Legal text has structure (sections, sub-clauses,
+# definitions) that fixed-size token windows cut through mid-clause — hurting
+# requirement extraction and retrieval. We split on these markers instead, then
+# pack whole clauses up to the token budget.
+_CLAUSE_MARKER = re.compile(
+    r"^\s*(?:"
+    r"\d+\.\d+(?:\.\d+)*[.)]?"                                          # 1.2  1.2.3  1.2.
+    r"|\d+[.)]"                                                          # 1.  10)
+    r"|\([a-zA-Z0-9]{1,4}\)"                                            # (a) (iv) (12)
+    r"|[a-zA-Z][.)]"                                                     # a.  b)  i.
+    r"|(?:Section|Chapter|Part|Clause|Paragraph|Rule|Article|Schedule|Annexure|Annex)\b"
+    r")\s",
+    re.IGNORECASE,
+)
+
+
+def _make_token_counter() -> Callable[[str], int]:
+    """A token-length function matching the recursive splitter's (tiktoken gpt2),
+    with a rough chars/4 fallback if tiktoken can't load. Used only for the
+    packing budget, which is soft — the real token split of an oversized clause
+    is delegated to the recursive splitter."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("gpt2")
+        return lambda s: len(enc.encode(s))
+    except Exception:                                    # pragma: no cover - tiktoken always present
+        return lambda s: max(1, len(s) // 4)
+
+
+def _clause_units(text: str) -> List[str]:
+    """Group lines into clause units: each unit starts at a clause/section marker
+    line and absorbs the following non-marker lines (its body). Text before the
+    first marker (a preamble) is its own leading unit."""
+    units: List[str] = []
+    cur: List[str] = []
+    for line in (text or "").split("\n"):
+        if cur and _CLAUSE_MARKER.match(line):
+            units.append("\n".join(cur))
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        units.append("\n".join(cur))
+    return units
+
+
+def split_legal_text(
+    text: str,
+    token_splitter: Callable[[str], List[str]],
+    count_tokens: Callable[[str], int],
+    max_tokens: int,
+) -> List[str]:
+    """Clause/section-aware split of legal *text*.
+
+    Breaks on clause/section markers, then packs WHOLE clauses up to
+    ``max_tokens`` (never cutting a clause across chunks). A single clause larger
+    than the budget falls back to ``token_splitter`` (the recursive token
+    splitter). No cross-chunk overlap — clause boundaries are the natural split
+    points. Text with no markers yields the whole text as one unit, so this
+    degrades to plain token-splitting for unstructured input.
+    """
+    chunks: List[str] = []
+    buf: List[str] = []
+    buf_tokens = 0
+    for unit in _clause_units(text):
+        unit_tokens = count_tokens(unit)
+        if unit_tokens > max_tokens:                     # oversized clause -> token-split it
+            if buf:
+                chunks.append("\n".join(buf))
+                buf, buf_tokens = [], 0
+            chunks.extend(token_splitter(unit))
+            continue
+        if buf and buf_tokens + unit_tokens > max_tokens:
+            chunks.append("\n".join(buf))
+            buf, buf_tokens = [], 0
+        buf.append(unit)
+        buf_tokens += unit_tokens
+    if buf:
+        chunks.append("\n".join(buf))
+    return [c for c in (chunk.strip() for chunk in chunks) if c]
+
+
 class DocumentProcessor:
     """Parse PDF / DOCX / TXT into token-sized LangChain Documents (+ images)."""
 
@@ -41,6 +127,7 @@ class DocumentProcessor:
             chunk_size=config.CHUNK_SIZE_TOKENS,
             chunk_overlap=config.CHUNK_OVERLAP_TOKENS,
         )
+        self._count_tokens = _make_token_counter()      # for clause-aware packing
 
     # ── Step 1: parse a file into a normalized dict ───────────────────────
 
@@ -84,7 +171,14 @@ class DocumentProcessor:
 
     # ── Step 2: token-chunk the text into LangChain Documents ─────────────
 
-    def build_langchain_documents(self, parsed: dict) -> List[Document]:
+    def build_langchain_documents(self, parsed: dict, clause_aware: bool = False) -> List[Document]:
+        """Token-chunk each page's text into LangChain Documents.
+
+        ``clause_aware=True`` uses structure-aware splitting for legal text
+        (regulations) — split on clause/section markers, pack whole clauses — so a
+        requirement isn't cut mid-clause. Default (False) keeps the plain
+        token-window split for policies / general documents.
+        """
         if not isinstance(parsed, dict) or not parsed.get("pages"):
             return []
 
@@ -94,7 +188,15 @@ class DocumentProcessor:
             text = (text or "").strip()
             if not text:
                 continue
-            for chunk in self._splitter.split_text(text):
+            pieces = (
+                split_legal_text(
+                    text, self._splitter.split_text, self._count_tokens,
+                    self.config.CHUNK_SIZE_TOKENS,
+                )
+                if clause_aware
+                else self._splitter.split_text(text)
+            )
+            for chunk in pieces:
                 chunk = chunk.strip()
                 if len(chunk) < _MIN_CHUNK_CHARS:
                     continue

@@ -42,7 +42,7 @@ def test_ingest_stores_a_snapshot_for_each_visual_page(monkeypatch, tmp_path):
     monkeypatch.setattr(p.processor, "process_documents", lambda fp: parsed)
     monkeypatch.setattr(
         p.processor, "build_langchain_documents",
-        lambda parsed: [Document(page_content="c", metadata={"filename": "doc.pdf"})],
+        lambda parsed, clause_aware=False: [Document(page_content="c", metadata={"filename": "doc.pdf"})],
     )
     monkeypatch.setattr(p.embedding_manager, "create_vector_store", lambda docs, namespace=None: None)
     monkeypatch.setattr(p.config, "USE_HYBRID_SEARCH", False)  # skip BM25 path
@@ -65,7 +65,7 @@ def test_no_db_means_no_storage_attempt(monkeypatch, tmp_path):
     monkeypatch.setattr(p.processor, "process_documents", lambda fp: parsed)
     monkeypatch.setattr(
         p.processor, "build_langchain_documents",
-        lambda parsed: [Document(page_content="c", metadata={"filename": "doc.pdf"})],
+        lambda parsed, clause_aware=False: [Document(page_content="c", metadata={"filename": "doc.pdf"})],
     )
     monkeypatch.setattr(p.embedding_manager, "create_vector_store", lambda docs, namespace=None: None)
     monkeypatch.setattr(p.config, "USE_HYBRID_SEARCH", False)

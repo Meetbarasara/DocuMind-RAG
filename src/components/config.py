@@ -52,6 +52,12 @@ class Config(BaseSettings):
     # predictable context size and cost (~512 tokens, 64 overlap).
     CHUNK_SIZE_TOKENS: int = 512
     CHUNK_OVERLAP_TOKENS: int = 64
+    # Clause/section-aware chunking for legal text (regulations): split on
+    # clause/section markers and pack WHOLE clauses up to CHUNK_SIZE_TOKENS,
+    # instead of cutting fixed-size windows mid-clause. Sharper requirement
+    # extraction + retrieval on dense legal text; applied to the regulation seed
+    # path (see scripts/seed_regulation). Kill switch — set false to revert.
+    USE_CLAUSE_AWARE_CHUNKING: bool = True
 
     # ── Retrieval parameters ──────────────────────────────────────────
     # TOP_K=10 (candidate pool for the reranker). Eval-tuned: on goldset.v1 the

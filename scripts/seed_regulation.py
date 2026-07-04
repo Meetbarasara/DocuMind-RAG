@@ -40,14 +40,18 @@ async def seed_regulation(*, pdf_path, name, regulator, circular_id, namespace,
     origin). The requirement list is serialised with dataclasses.asdict so its
     keys (id/text/page/section) match what the check route reconstructs.
     """
+    # Regulations are legal text — clause/section-aware chunking keeps whole
+    # clauses together for cleaner requirement extraction + retrieval.
+    clause_aware = getattr(config, "USE_CLAUSE_AWARE_CHUNKING", True)
     proc = DocumentProcessor(config)
-    chunks = proc.build_langchain_documents(proc.process_documents(pdf_path))
-    logger.info("Parsed %s into %d chunk(s)", pdf_path, len(chunks))
+    chunks = proc.build_langchain_documents(
+        proc.process_documents(pdf_path), clause_aware=clause_aware)
+    logger.info("Parsed %s into %d chunk(s) (clause_aware=%s)", pdf_path, len(chunks), clause_aware)
 
     requirements = await extract_requirements(chunks, judge_llm)
     logger.info("Extracted %d requirement(s)", len(requirements))
 
-    n_ingested = pipeline.ingest_file(pdf_path, namespace=namespace)
+    n_ingested = pipeline.ingest_file(pdf_path, namespace=namespace, clause_aware=clause_aware)
     logger.info("Ingested %d chunk(s) into namespace=%s", n_ingested, namespace)
 
     record = db.upsert_regulation(
