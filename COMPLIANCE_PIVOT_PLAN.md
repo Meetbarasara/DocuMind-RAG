@@ -4,7 +4,7 @@
 
 ---
 
-## Status — 2026-07-04 (Phase 1 ✅ complete · Phase 2 ✅ complete · Phase 3 deferred)
+## Status — 2026-07-05 (Phase 1 ✅ · Phase 2 ✅ · Phase 3 started — "make it deployable" ✅, hosting deferred)
 
 **Phase 1 is done and its exit criteria are met:** a real streamed, cited gap table renders in the new Next.js UI, and a labeled gold set reports a measured accuracy gated in CI. Built + verified — `doc_type`/seed path, cached requirement extraction (with dedup), per-requirement retrieval, the swappable Cerebras judge with robust JSON, `POST /api/compliance/check` (SSE), persisted results, the compliance gold set + **macro-F1 0.91** (CI-gated), and the glass hero screen. The engine + eval + UI were **live-proven end-to-end** on the real stack (a real cited check incl. a Conflict, plus Ask + history), and a **real RBI Master Direction chapter** was seeded (`regulation_id 95919385…`, 34 requirements).
 
@@ -188,7 +188,7 @@ Wire it into `run_eval` + the CI gate, exactly like the current retrieval/RAGAS 
 
 **Phase 2 — depth.** Change-tracking (diff a new circular vs the old, re-check only what changed); Library + Ask screens; swap in the real RBI Master Direction PDF; clause-level citation verification.
 
-**Phase 3 — deployment** (the deferred track). Now justified: a stronger reason to spend on hosting + (optionally) a paid judge model.
+**Phase 3 — deployment** (the deferred track). Now justified: a stronger reason to spend on hosting + (optionally) a paid judge model. **"Make it deployable" ✅ (2026-07-05):** the pivot is now containerized — `frontend-next/Dockerfile` (Next `output:"standalone"`, multi-stage) + a rewired `docker-compose.yml` (FastAPI `api` + Next `frontend`, Streamlit dropped from the stack), the rate limiter is multi-worker-safe via Redis (`REDIS_URL`), and `DEPLOY.md` documents the build-time API URL, CORS, single-worker default, and free-tier caveats (mpnet ~1GB RAM; slow free-Cerebras checks). Boot-tested the standalone server (HTTP 200) — Docker build itself unrun (no daemon in the dev sandbox). **Still deferred (needs the user):** picking + provisioning a host, and the latency call (a live check is still minutes on free Cerebras — a faster/paid judge would fix it).
 
 ---
 
