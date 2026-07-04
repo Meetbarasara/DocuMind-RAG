@@ -10,7 +10,7 @@
 
 **Phase 2 progress:** Ask screen ✅ · real RBI Master Direction PDF ✅ (seeded) · **clause-level citation verification ✅** (§4.3/§7 — the judge's evidence quote is now grounded to a specific policy *clause* via a graded containment score, not a whole-chunk substring test; the verbatim clause + a "Verified" badge show in the gap row, and an `evidence_faithfulness` metric is gated in CI). **Remaining Phase 2:** change-tracking (diff a new circular vs the old, re-check only what changed), the Library screen. **Follow-ups:** retire Streamlit once at parity, doc-delete control in the new UI, clause/section-aware chunking for legal text, re-seed the real RBI reg complete (with the `max_tokens` fix). **Phase 3 (deployment) stays deferred** until quality/latency are demo-ready.
 
-> This plan is the **design**; the running **status + gotchas** live in the memory file `project_documind_slimming_phase.md`. Current code: local `master` = `9198d28`; PR #2 (`compliance-pivot` → `master`).
+> This plan is the **design**; the running **status + gotchas** live in the memory file `project_documind_slimming_phase.md`. Current code: **`origin/master` is current** (PR #2 merged 2026-07-04 — the whole pivot, incl. this session's clause-level verification, is on `master`).
 
 ---
 
