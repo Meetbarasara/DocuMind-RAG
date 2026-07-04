@@ -23,6 +23,18 @@ export interface GapRow {
   policy_page: number | null;
   evidence_score?: number; // 0-1 grounding score
   evidence_verified?: boolean; // the quote grounded in a real clause
+  // Change-tracking (a re-check row): what happened to this requirement since the
+  // prior check, and whether its verdict was carried forward (not re-judged).
+  change?: "unchanged" | "changed" | "added";
+  carried_forward?: boolean;
+}
+
+// How a regulation's requirements changed between two versions (change-tracking).
+export interface DeltaCounts {
+  unchanged: number;
+  changed: number;
+  added: number;
+  removed: number;
 }
 
 export interface Summary {
@@ -32,6 +44,7 @@ export interface Summary {
   Gap: number;
   Conflict: number;
   "Needs review": number;
+  delta?: DeltaCounts; // present on a persisted re-check
 }
 
 export interface Regulation {
@@ -57,9 +70,10 @@ export type StreamEvent =
       type: "summary_init";
       total: number;
       regulation: { id?: string; name?: string; regulator?: string };
+      delta?: DeltaCounts; // present on a re-check (POST /recheck)
     }
   | { type: "row"; checked: number; total: number; row: GapRow }
-  | { type: "summary_final"; summary: Summary; check_id: string | null }
+  | { type: "summary_final"; summary: Summary; check_id: string | null; delta?: DeltaCounts }
   | { type: "error"; message: string };
 
 // SSE events from POST /api/chat/query/stream (the Ask screen).

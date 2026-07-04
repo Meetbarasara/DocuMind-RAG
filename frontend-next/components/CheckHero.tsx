@@ -9,11 +9,12 @@ import {
   listChecks,
   listDocuments,
   listRegulations,
+  recheck,
   runCheck,
   type DocInfo,
 } from "@/lib/api";
 import type { Session } from "@/lib/session";
-import type { CheckSummary, GapRow as Row, Regulation } from "@/lib/types";
+import type { CheckSummary, DeltaCounts, GapRow as Row, Regulation } from "@/lib/types";
 import ChecksHistory from "./ChecksHistory";
 import GapRowCard from "./GapRow";
 import PolicyUpload from "./PolicyUpload";
@@ -57,6 +58,7 @@ export default function CheckHero({
   const [total, setTotal] = useState(0);
   const [regName, setRegName] = useState("");
   const [activeCheckId, setActiveCheckId] = useState<string | null>(null);
+  const [delta, setDelta] = useState<DeltaCounts | null>(null);   // set on a re-check
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -121,6 +123,7 @@ export default function CheckHero({
     setTotal(0);
     setRegName("");
     setActiveCheckId(null);
+    setDelta(null);
     setPhase("running");
     try {
       await runCheck(
@@ -166,9 +169,54 @@ export default function CheckHero({
       setRows(check.rows || []);
       setTotal(check.summary?.total ?? (check.rows?.length || 0));
       setRegName(check.policy_label || "");
+      setDelta(check.summary?.delta ?? null);   // a re-opened re-check shows its delta
       setPhase("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open that check.");
+    }
+  }
+
+  // Re-check a prior check against the CURRENT regulation: only added/changed
+  // requirements are re-judged, the rest carried forward (see POST /recheck).
+  async function recheckCheck(id: string) {
+    if (!session) return;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setRows([]);
+    setError(null);
+    setTotal(0);
+    setRegName("");
+    setDelta(null);
+    setActiveCheckId(id);
+    setPhase("running");
+    try {
+      await recheck(
+        id,
+        session.accessToken,
+        (e) => {
+          if (ac.signal.aborted) return;
+          if (e.type === "summary_init") {
+            setTotal(e.total);
+            setRegName(e.regulation?.name || "");
+            if (e.delta) setDelta(e.delta);
+          } else if (e.type === "row") {
+            setRows((prev) => [...prev, e.row]);
+          } else if (e.type === "summary_final") {
+            if (e.delta) setDelta(e.delta);
+            setPhase("done");
+          } else if (e.type === "error") {
+            setError(e.message);
+          }
+        },
+        ac.signal,
+      );
+      if (!ac.signal.aborted) setPhase((p) => (p === "running" ? "done" : p));
+      if (!ac.signal.aborted) listChecks(session.accessToken).then(setChecks).catch(() => {});
+    } catch (err) {
+      if (ac.signal.aborted) return;
+      setError(err instanceof Error ? err.message : "Re-check failed.");
+      setPhase("error");
     }
   }
 
@@ -231,7 +279,12 @@ export default function CheckHero({
               </label>
               <PolicyUpload token={session.accessToken} docs={docs} onChanged={reloadDocs} />
             </div>
-            <ChecksHistory checks={checks} activeId={activeCheckId} onOpen={openCheck} />
+            <ChecksHistory
+              checks={checks}
+              activeId={activeCheckId}
+              onOpen={openCheck}
+              onRecheck={recheckCheck}
+            />
           </div>
         ) : (
           <div className="space-y-3">
@@ -254,6 +307,7 @@ export default function CheckHero({
         <EmptyState />
       ) : (
         <div className="space-y-5">
+          {delta && <DeltaBanner delta={delta} />}
           <SummaryCards counts={counts} />
           <div className="flex items-center justify-between text-sm text-[var(--muted)]">
             <span>
@@ -348,6 +402,30 @@ function ModeToggle({
           {m}
         </button>
       ))}
+    </div>
+  );
+}
+
+function DeltaBanner({ delta }: { delta: DeltaCounts }) {
+  const items: [string, number][] = [
+    ["added", delta.added],
+    ["changed", delta.changed],
+    ["unchanged", delta.unchanged],
+    ["removed", delta.removed],
+  ];
+  return (
+    <div className="glass-soft flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl px-4 py-2.5 text-sm">
+      <span className="font-medium text-[var(--fg)]">Change-tracked re-check</span>
+      <span className="hidden text-[var(--muted)] sm:inline">
+        — only added &amp; changed requirements were re-judged; the rest carried forward.
+      </span>
+      <div className="ml-auto flex flex-wrap items-center gap-3 text-[var(--muted)]">
+        {items.map(([label, n]) => (
+          <span key={label} className="tabular-nums">
+            <span className="font-semibold text-[var(--fg)]">{n}</span> {label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

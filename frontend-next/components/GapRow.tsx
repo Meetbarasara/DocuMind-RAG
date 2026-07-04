@@ -33,6 +33,10 @@ export default function GapRowCard({ row }: { row: Row }) {
   // policy clause (default to "has a citation" when the flag is absent).
   const clauseText = row.policy_clause || row.policy_quote;
   const verified = row.evidence_verified ?? row.policy_filename != null;
+  // Change-tracking: flag the deltas a re-check re-judged (carried-forward rows
+  // get no chip — "same as before").
+  const changeChip =
+    row.change === "added" ? "New" : row.change === "changed" ? "Changed" : null;
 
   return (
     <div className={`${cls} glass overflow-hidden rounded-2xl`}>
@@ -52,6 +56,11 @@ export default function GapRowCard({ row }: { row: Row }) {
             {row.requirement}
           </p>
         </div>
+        {changeChip && (
+          <span className="hidden shrink-0 rounded-full border border-indigo-400/30 bg-indigo-400/10 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-indigo-200 sm:inline">
+            {changeChip}
+          </span>
+        )}
         <span className="hidden shrink-0 text-xs text-[var(--muted)] tabular-nums sm:block">
           {Math.round(row.confidence * 100)}%
         </span>

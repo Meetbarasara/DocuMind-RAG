@@ -88,6 +88,30 @@ export async function runCheck(
   await readSSE(res.body, onEvent);
 }
 
+/** Re-check a prior check against the CURRENT version of its regulation, streaming
+ *  only the re-judged deltas + carried-forward rows (POST /api/compliance/recheck). */
+export async function recheck(
+  checkId: string,
+  token: string | undefined,
+  onEvent: (e: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/compliance/recheck`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
+    body: JSON.stringify({ check_id: checkId }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(
+      res.status === 401
+        ? "Your session expired — sign in again."
+        : await errorDetail(res, `Re-check failed (HTTP ${res.status}).`),
+    );
+  }
+  await readSSE(res.body, onEvent);
+}
+
 export async function listRegulations(token?: string): Promise<Regulation[]> {
   const res = await fetch(`${API_BASE}/api/compliance/regulations`, {
     headers: authHeaders(token),
