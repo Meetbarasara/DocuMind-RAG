@@ -15,6 +15,7 @@ from src.components.compliance import (
     _parse_json_object,
     _split_clauses,
     _verify_evidence,
+    diff_requirements,
     extract_requirements,
     judge_requirement,
     run_check,
@@ -225,3 +226,60 @@ def test_summarize_counts_by_status():
     vs = [Verdict("a", "Covered"), Verdict("b", "Covered"), Verdict("c", "Gap"), Verdict("d", NEEDS_REVIEW)]
     s = summarize(vs)
     assert s == {"total": 4, "Covered": 2, "Partial": 0, "Gap": 1, "Conflict": 0, "Needs review": 1}
+
+
+# ── Change-tracking: diff_requirements ──────────────────────────────────────
+
+def _req(rid, text):
+    return Requirement(id=rid, text=text)
+
+
+def test_diff_identical_lists_are_all_unchanged():
+    old = [_req("o1", "Maintain records for five years after the account is closed."),
+           _req("o2", "Categorise every customer as low, medium or high risk.")]
+    new = [_req("n1", "Maintain records for five years after the account is closed."),
+           _req("n2", "Categorise every customer as low, medium or high risk.")]
+    d = diff_requirements(old, new)
+    assert d.counts() == {"unchanged": 2, "changed": 0, "added": 0, "removed": 0}
+    assert [o.id for o, n in d.unchanged] == ["o1", "o2"]        # input order preserved
+
+
+def test_diff_detects_added_removed_and_changed():
+    old = [_req("o1", "Maintain records of customer identity for five years after the account is closed."),
+           _req("o2", "Categorise every customer as low, medium or high risk."),
+           _req("o3", "Appoint a Principal Officer for KYC compliance.")]
+    new = [_req("n1", "Maintain records of customer identity for five years after the account is closed."),  # == o1
+           _req("n2", "Categorise every customer as low, medium, high or very-high risk."),                  # ~ o2
+           _req("n3", "File Suspicious Transaction Reports with FIU-IND within seven days.")]                # new
+    d = diff_requirements(old, new)
+    assert [n.id for o, n in d.unchanged] == ["n1"]
+    assert [(o.id, n.id) for o, n in d.changed] == [("o2", "n2")]
+    assert [n.id for n in d.added] == ["n3"]
+    assert [o.id for o in d.removed] == ["o3"]                   # dropped from the new circular
+
+
+def test_diff_pairs_with_the_most_similar_predecessor():
+    # nx is identical to ob and only loosely like oa -> it must pair with ob
+    # (global best-first), leaving oa removed, not first-match to oa.
+    old = [_req("oa", "Retain KYC records for five years."),
+           _req("ob", "Retain KYC records for five years after the account is closed.")]
+    new = [_req("nx", "Retain KYC records for five years after the account is closed.")]
+    d = diff_requirements(old, new)
+    assert d.unchanged == [(old[1], new[0])]                     # paired with ob, the identical one
+    assert [o.id for o in d.removed] == ["oa"]
+    assert d.changed == [] and d.added == []
+
+
+def test_diff_reworded_retention_period_is_changed_not_unchanged():
+    # A retention-period change must be re-judged, never carried forward.
+    old = [_req("o", "Maintain records for five years after the account is closed.")]
+    new = [_req("n", "Maintain records for eight years after the account is closed.")]
+    d = diff_requirements(old, new)
+    assert d.counts() == {"unchanged": 0, "changed": 1, "added": 0, "removed": 0}
+    assert (old[0], new[0]) in d.changed
+
+
+def test_diff_empty_old_all_added_empty_new_all_removed():
+    a, b = _req("a", "Requirement A about OVD collection."), _req("b", "Requirement B about risk assessment.")
+    assert diff_requirements([], [a, b]).counts()["added"] == 2
+    assert diff_requirements([a, b], []).counts()["removed"] == 2

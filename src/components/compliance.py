@@ -21,7 +21,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -324,8 +324,84 @@ async def run_check(requirements: List[Requirement], retrieval_manager, judge_ll
 
 def summarize(verdicts: List[Verdict]) -> dict:
     """Count verdicts by status for the summary cards."""
-    counts = Counter(v.status for v in verdicts)
-    out = {"total": len(verdicts)}
+    return summarize_rows([{"status": v.status} for v in verdicts])
+
+
+def summarize_rows(rows: List[dict]) -> dict:
+    """Status counts from serialised gap-table rows — used by change-tracking,
+    where carried-forward rows are plain dicts (a reused prior verdict), not
+    Verdict objects."""
+    counts = Counter(r.get("status") for r in rows)
+    out = {"total": len(rows)}
     for s in (*VALID_STATUSES, NEEDS_REVIEW):
         out[s] = counts.get(s, 0)
     return out
+
+
+# ── Change-tracking: diff two regulation versions ───────────────────────────
+#
+# When a circular is updated we re-check only what changed, not all N
+# requirements (a full real-RBI check is ~34 judge calls = ~15 min on the free
+# Cerebras tier). Requirement ids are positional (assigned at extraction), so
+# they are NOT stable across versions — we match by TEXT similarity instead.
+# Bias: only near-identical text counts as "unchanged". An under-called change
+# just gets re-checked (wasted work, safe); an over-called "unchanged" would
+# skip re-checking a genuine change — the dangerous direction in compliance.
+
+REQ_UNCHANGED_THRESHOLD = 0.97   # >= this similarity: the same requirement, unchanged
+REQ_MATCH_THRESHOLD = 0.6        # >= this (but < unchanged): a modified version of an old req
+
+
+@dataclass
+class RequirementDiff:
+    unchanged: List[Tuple[Requirement, Requirement]]   # (old, new): text near-identical
+    changed: List[Tuple[Requirement, Requirement]]     # (old, new): same obligation, modified
+    added: List[Requirement]                           # in the new version only
+    removed: List[Requirement]                         # in the old version only
+
+    def counts(self) -> dict:
+        return {"unchanged": len(self.unchanged), "changed": len(self.changed),
+                "added": len(self.added), "removed": len(self.removed)}
+
+
+def _text_similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, _norm(a), _norm(b), autojunk=False).ratio()
+
+
+def diff_requirements(old: List[Requirement], new: List[Requirement]) -> RequirementDiff:
+    """Diff two versions of a regulation's requirement list by text similarity.
+
+    Each new requirement is matched to at most one old requirement, **globally
+    best-first** (highest-similarity pairs claimed first) so a rewording pairs
+    with its true predecessor rather than an incidental look-alike:
+      - similarity >= REQ_UNCHANGED_THRESHOLD -> unchanged (carry the old verdict)
+      - similarity >= REQ_MATCH_THRESHOLD     -> changed   (must be re-judged)
+      - otherwise                             -> the new one is added / the old one removed
+    Pure and deterministic (no LLM) — change detection is free and unit-testable.
+    Output lists preserve the input order of the version they come from.
+    """
+    scored = [
+        (_text_similarity(n.text, o.text), i, j)
+        for i, n in enumerate(new)
+        for j, o in enumerate(old)
+    ]
+    scored = [t for t in scored if t[0] >= REQ_MATCH_THRESHOLD]
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    match_of_new: dict = {}          # new index -> (old index, similarity)
+    used_old: set = set()
+    for sim, i, j in scored:
+        if i in match_of_new or j in used_old:
+            continue
+        match_of_new[i] = (j, sim)
+        used_old.add(j)
+
+    unchanged, changed = [], []
+    for i, n in enumerate(new):
+        if i not in match_of_new:
+            continue
+        j, sim = match_of_new[i]
+        (unchanged if sim >= REQ_UNCHANGED_THRESHOLD else changed).append((old[j], n))
+    added = [n for i, n in enumerate(new) if i not in match_of_new]
+    removed = [o for j, o in enumerate(old) if j not in used_old]
+    return RequirementDiff(unchanged=unchanged, changed=changed, added=added, removed=removed)

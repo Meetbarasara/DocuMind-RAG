@@ -198,6 +198,91 @@ async def test_check_streams_rows_and_persists(client):
 
 
 @pytest.mark.asyncio
+async def test_recheck_only_rejudges_deltas_and_carries_forward(client, monkeypatch):
+    # 1. Initial check → persists a prior check (req-1 Partial, req-2 Gap).
+    r0 = await client.post("/api/compliance/check", json={"regulation_id": "reg-1"})
+    prior_id = next(e for e in _events(r0.text) if e["type"] == "summary_final")["check_id"]
+
+    # 2. A new version of the circular: req-1 unchanged, req-2 reworded (changed),
+    #    a brand-new req-3.
+    fake_db = app.dependency_overrides[get_db]()      # same shared instance
+    fake_db.regs["reg-1"]["requirements"] = [
+        {"id": "req-1", "text": "Retain KYC records for at least five years.", "page": 3, "section": None},
+        {"id": "req-2", "text": "Identify the beneficial owners and controllers of legal-entity customers.",
+         "page": 2, "section": None},
+        {"id": "req-3", "text": "File Suspicious Transaction Reports with FIU-IND within seven days.",
+         "page": 5, "section": None},
+    ]
+
+    # 3. A counting judge proves the unchanged req is NOT re-judged.
+    class CountingJudge(FakeJudge):
+        calls = 0
+
+        async def ainvoke(self, messages):
+            CountingJudge.calls += 1
+            return await super().ainvoke(messages)
+
+    monkeypatch.setattr(compliance_router, "build_judge_llm", lambda config, **kw: CountingJudge())
+
+    resp = await client.post("/api/compliance/recheck", json={"check_id": prior_id})
+    assert resp.status_code == 200
+    events = _events(resp.text)
+
+    init = events[0]
+    assert init["type"] == "summary_init"
+    assert init["delta"] == {"unchanged": 1, "changed": 1, "added": 1, "removed": 0}
+    assert init["total"] == 3                          # unchanged + changed + added; removed isn't a row
+
+    rows = {e["row"]["requirement_id"]: e["row"] for e in events if e["type"] == "row"}
+    assert rows["req-1"]["carried_forward"] is True and rows["req-1"]["change"] == "unchanged"
+    assert rows["req-1"]["status"] == "Partial"        # prior verdict reused verbatim
+    assert rows["req-2"]["carried_forward"] is False and rows["req-2"]["change"] == "changed"
+    assert rows["req-3"]["carried_forward"] is False and rows["req-3"]["change"] == "added"
+
+    # Only the 2 deltas were judged — the unchanged req-1 was carried, not re-judged.
+    assert CountingJudge.calls == 2
+
+    final = next(e for e in events if e["type"] == "summary_final")
+    assert final["delta"] == {"unchanged": 1, "changed": 1, "added": 1, "removed": 0}
+    assert final["check_id"]
+
+    # Persisted with the delta + change tags so re-opening shows what changed.
+    full = (await client.get(f"/api/compliance/checks/{final['check_id']}")).json()
+    assert full["summary"]["delta"]["added"] == 1
+    assert {r["requirement_id"] for r in full["rows"]} == {"req-1", "req-2", "req-3"}
+
+
+@pytest.mark.asyncio
+async def test_recheck_with_only_removals_needs_no_judge(client, monkeypatch):
+    # A delta-free-of-add/change re-check must succeed even with NO judge key.
+    r0 = await client.post("/api/compliance/check", json={"regulation_id": "reg-1"})
+    prior_id = next(e for e in _events(r0.text) if e["type"] == "summary_final")["check_id"]
+
+    fake_db = app.dependency_overrides[get_db]()
+    fake_db.regs["reg-1"]["requirements"] = [       # req-2 removed; req-1 unchanged
+        {"id": "req-1", "text": "Retain KYC records for at least five years.", "page": 3, "section": None},
+    ]
+
+    def _raise(config, **kw):                       # judge unconfigured — must not matter
+        raise JudgeNotConfigured("no key")
+    monkeypatch.setattr(compliance_router, "build_judge_llm", _raise)
+
+    resp = await client.post("/api/compliance/recheck", json={"check_id": prior_id})
+    assert resp.status_code == 200
+    events = _events(resp.text)
+    assert events[0]["delta"] == {"unchanged": 1, "changed": 0, "added": 0, "removed": 1}
+    rows = [e["row"] for e in events if e["type"] == "row"]
+    assert len(rows) == 1 and rows[0]["requirement_id"] == "req-1"
+    assert rows[0]["carried_forward"] is True
+
+
+@pytest.mark.asyncio
+async def test_recheck_unknown_check_returns_404(client):
+    resp = await client.post("/api/compliance/recheck", json={"check_id": "nope"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_unknown_regulation_returns_404(client):
     resp = await client.post("/api/compliance/check", json={"regulation_id": "nope"})
     assert resp.status_code == 404
