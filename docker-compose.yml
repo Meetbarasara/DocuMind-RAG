@@ -1,8 +1,10 @@
-# Runs the API + Streamlit frontend from the one shared image built from
-# ./Dockerfile. Copy .env.example to .env and fill in your secrets first —
-# both services read it; Config's fail-fast validation (Part C) means a
-# misconfigured .env fails the api container at startup with a clear error
-# instead of partially booting.
+# The KYC Compliance stack: the FastAPI backend (api) + the Next.js UI
+# (frontend). Copy .env.example to .env and fill in your secrets first — the api
+# reads it; Config's fail-fast validation (Part C) means a misconfigured .env
+# fails the api container at startup with a clear error instead of partially
+# booting. Single uvicorn worker by default (correct for the in-process upload-
+# job tracking; set REDIS_URL to make the cache + rate limiter multi-worker-safe
+# — see DEPLOY.md).
 services:
   api:
     build: .
@@ -14,22 +16,16 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: .
-    command: ["streamlit", "run", "frontend/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+    build:
+      context: ./frontend-next
+      args:
+        # NEXT_PUBLIC_API_BASE is baked into the CLIENT bundle at BUILD time and
+        # used by the BROWSER — so it must be a URL the browser can reach (the
+        # host-published API), NOT the compose-internal http://api:8000. Override
+        # for a real deployment (e.g. https://api.yourdomain.com).
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
     ports:
-      - "8501:8501"
-    env_file:
-      - .env
-    environment:
-      # Talk to the api container by its Compose service name, not localhost
-      # (which inside this container means "myself", not the api service).
-      API_BASE: http://api:8000
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
+      - "3000:3000"
     depends_on:
       api:
         condition: service_healthy

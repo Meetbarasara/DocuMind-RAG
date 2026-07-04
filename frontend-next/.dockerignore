@@ -1,0 +1,10 @@
+# Keep the build context small + never ship local build output / secrets.
+node_modules
+.next
+out
+npm-debug.log*
+.env*
+.git
+.DS_Store
+Dockerfile
+.dockerignore
