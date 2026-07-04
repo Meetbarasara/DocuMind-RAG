@@ -10,8 +10,25 @@ import {
 } from "@/lib/session";
 import AskPanel from "./AskPanel";
 import CheckHero from "./CheckHero";
+import LibraryScreen from "./LibraryScreen";
 
-type View = "check" | "ask";
+type View = "check" | "ask" | "library";
+
+const HEADERS: Record<View, { title: string; subtitle: string }> = {
+  check: {
+    title: "Compliance gap analysis",
+    subtitle:
+      "A cited, requirement-by-requirement gap table — each clause judged Covered, Partial, Gap, or Conflict.",
+  },
+  ask: {
+    title: "Ask your policy",
+    subtitle: "Ask a question and get a cited answer from your uploaded documents.",
+  },
+  library: {
+    title: "Your library",
+    subtitle: "Manage your uploaded policies and browse available regulations.",
+  },
+};
 
 export default function AppShell() {
   const [session, setSession] = useState<Session | null>(null);
@@ -38,12 +55,10 @@ export default function AppShell() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-[var(--fg)] sm:text-4xl">
-              {view === "check" ? "Compliance gap analysis" : "Ask your policy"}
+              {HEADERS[view].title}
             </h1>
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-[var(--muted)]">
-              {view === "check"
-                ? "A cited, requirement-by-requirement gap table — each clause judged Covered, Partial, Gap, or Conflict."
-                : "Ask a question and get a cited answer from your uploaded documents."}
+              {HEADERS[view].subtitle}
             </p>
           </div>
           <Nav view={view} setView={setView} />
@@ -52,8 +67,10 @@ export default function AppShell() {
 
       {view === "check" ? (
         <CheckHero session={session} onSignedIn={onSignedIn} onSignOut={onSignOut} />
-      ) : (
+      ) : view === "ask" ? (
         <AskPanel session={session} onSignedIn={onSignedIn} />
+      ) : (
+        <LibraryScreen session={session} onSignedIn={onSignedIn} />
       )}
 
       <footer className="mt-10 border-t border-white/10 pt-5 text-xs text-[var(--muted)]">
@@ -68,6 +85,7 @@ function Nav({ view, setView }: { view: View; setView: (v: View) => void }) {
   const items: [View, string][] = [
     ["check", "Gap check"],
     ["ask", "Ask"],
+    ["library", "Library"],
   ];
   return (
     <div className="glass-soft flex rounded-xl p-1 text-sm">

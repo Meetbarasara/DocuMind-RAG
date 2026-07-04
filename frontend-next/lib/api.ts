@@ -205,6 +205,16 @@ export async function uploadPolicy(
   throw new Error("Upload is taking too long — check back later.");
 }
 
+/** Delete one of the user's uploaded documents (storage + metadata + Pinecone
+ *  vectors) via DELETE /api/documents/{filename}. */
+export async function deleteDocument(filename: string, token: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/documents/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `Delete failed (HTTP ${res.status}).`));
+}
+
 export async function listChecks(token: string): Promise<CheckSummary[]> {
   const res = await fetch(`${API_BASE}/api/compliance/checks`, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(await errorDetail(res, `Could not load checks (HTTP ${res.status}).`));

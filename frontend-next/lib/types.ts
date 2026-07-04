@@ -51,6 +51,8 @@ export interface Regulation {
   id: string;
   name: string;
   regulator?: string | null;
+  circular_id?: string | null;
+  ingested_at?: string;
 }
 
 export interface CheckSummary {
