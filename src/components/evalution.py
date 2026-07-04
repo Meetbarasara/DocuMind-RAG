@@ -361,3 +361,29 @@ def compliance_metrics(predictions: List[str], labels: List[str]) -> Dict:
             f1s.append(f1)
     macro_f1 = sum(f1s) / len(f1s) if f1s else 0.0
     return {"accuracy": accuracy, "macro_f1": macro_f1, "n": n, "per_status": per_status}
+
+
+# Statuses that assert the policy DOES contain a relevant clause — so they must
+# cite grounded evidence. Gap cites nothing by definition; "Needs review" never
+# produced a usable verdict. Neither is an evidence-faithfulness failure.
+_EVIDENCE_BEARING = ("Covered", "Partial", "Conflict")
+
+
+def evidence_faithfulness(statuses: List[str], verified: List[bool]) -> Dict:
+    """Of the verdicts that assert a policy clause, the fraction whose cited quote
+    is verifiably grounded in a retrieved policy clause.
+
+    ``statuses`` and ``verified`` are aligned per row; ``verified[i]`` is True when
+    row i's evidence quote grounded to a real clause (i.e.
+    ``compliance._verify_evidence`` cleared its threshold). Gap rows are excluded
+    from the denominator — a Gap correctly cites nothing, so counting it would
+    penalise a perfectly faithful run for finding gaps. Returns
+    ``{"evidence_faithfulness": float, "n_grounded": int}``; the score is 1.0 when
+    there are no evidence-bearing verdicts (nothing that could be unfaithful).
+    """
+    if len(statuses) != len(verified):
+        raise ValueError("statuses and verified must be the same length")
+    bearing = [bool(v) for s, v in zip(statuses, verified) if s in _EVIDENCE_BEARING]
+    n = len(bearing)
+    score = (sum(bearing) / n) if n else 1.0
+    return {"evidence_faithfulness": score, "n_grounded": n}

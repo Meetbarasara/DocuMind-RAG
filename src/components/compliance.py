@@ -16,6 +16,7 @@ Anti-hallucination design:
 """
 
 import asyncio
+import difflib
 import json
 import re
 from collections import Counter
@@ -31,6 +32,13 @@ logger = get_logger(__name__)
 
 VALID_STATUSES = ("Covered", "Partial", "Gap", "Conflict")
 NEEDS_REVIEW = "Needs review"
+
+# How much of the judge's evidence quote must be found in a single policy clause
+# for the citation to count as verified. High enough that an ungrounded quote is
+# rejected, loose enough to tolerate benign reformatting (a fixed typo, dropped
+# article, normalised punctuation). Tunable; measured by the compliance eval's
+# evidence-faithfulness metric.
+EVIDENCE_MATCH_THRESHOLD = 0.8
 
 
 # ── Data structures ────────────────────────────────────────────────────────
@@ -49,9 +57,11 @@ class Verdict:
     status: str                         # one of VALID_STATUSES or "Needs review"
     rationale: str = ""
     confidence: float = 0.0
-    policy_quote: str = ""
+    policy_quote: str = ""                  # the judge's evidence quote (as emitted)
+    policy_clause: str = ""                 # the verbatim source clause it grounds to
     policy_filename: Optional[str] = None   # derived by matching, not trusted
     policy_page: Optional[int] = None
+    evidence_score: float = 0.0             # 0-1: how well the quote grounds (see _verify_evidence)
 
 
 # ── Prompts ────────────────────────────────────────────────────────────────
@@ -115,22 +125,76 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip().lower()
 
 
-def _match_quote_to_chunk(quote: str, chunks: List[Document]):
-    """Find the policy chunk a quote came from → (filename, page), or (None, None).
+# Split policy text after sentence/clause punctuation or a newline. A retrieved
+# chunk is ~512 tokens = many clauses; we cite the ONE clause the evidence grounds
+# to, not the whole blob.
+_CLAUSE_SPLIT = re.compile(r"(?<=[.;:])\s+|\n+")
+_MIN_CLAUSE_LEN = 12                          # drop fragments too short to ground a real quote
 
-    Whitespace-normalized substring match; falls back to the quote's first 40
-    chars (handles the model trimming punctuation). This is how we cite the
-    POLICY evidence without trusting the model's page number.
+
+def _split_clauses(text: str) -> List[str]:
+    """Break policy text into clause-sized spans for precise citation.
+
+    Splits on sentence/clause boundaries; drops tiny fragments. If nothing splits
+    out (a short chunk), the whole text is one clause — so short excerpts still
+    work exactly as before.
+    """
+    parts = [p.strip() for p in _CLAUSE_SPLIT.split(text or "") if p and p.strip()]
+    clauses = [p for p in parts if len(p) >= _MIN_CLAUSE_LEN]
+    return clauses or ([text.strip()] if (text or "").strip() else [])
+
+
+def _containment_score(needle: str, haystack: str) -> float:
+    """How much of *needle* is present, contiguously, inside *haystack* (0.0-1.0).
+
+    Sum of difflib matching-block sizes over ``len(needle)`` — a verbatim quote
+    scores 1.0, a lightly-edited one scores high, an unrelated one near 0.
+    Normalised by the quote length (not by both strings, as SequenceMatcher.ratio
+    does) so a short quote fully inside a long clause still scores 1.0: the
+    question is "is the quote in the clause?", not "are the two similar in size?".
+    """
+    if not needle:
+        return 0.0
+    matcher = difflib.SequenceMatcher(None, needle, haystack, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    return matched / len(needle)
+
+
+def _verify_evidence(quote: str, chunks: List[Document]):
+    """Locate the specific policy CLAUSE a quote grounds to and score the match.
+
+    Returns ``(clause, filename, page, score)``:
+      - clause   : the verbatim source clause (the precise citation span), or "".
+      - filename : the chunk that clause is in, or None.
+      - page     : that chunk's page, or None.
+      - score    : 0.0-1.0 grounding score (best clause's containment of the quote).
+
+    This replaces a whole-chunk substring test and improves it two ways:
+      1. It pinpoints the exact clause, so the citation (and the side-by-side UI)
+         shows the real policy sentence, not a 512-token blob or the model's
+         paraphrase.
+      2. A graded score tolerates benign reformatting that an exact-substring match
+         wrongly rejected as unverified, while a quote grounded in nothing scores
+         near zero and stays flagged.
+    filename/page/clause are returned ONLY when the score clears
+    EVIDENCE_MATCH_THRESHOLD — an ungrounded quote never yields a citation. The
+    raw score is always returned (for the eval + review), even below threshold.
     """
     q = _norm(quote)
     if not q:
-        return None, None
-    probes = [q] if len(q) <= 40 else [q, q[:40]]
-    for probe in probes:
-        for ch in chunks:
-            if probe in _norm(ch.page_content):
-                return ch.metadata.get("filename"), ch.metadata.get("page_number")
-    return None, None
+        return "", None, None, 0.0
+    best_clause, best_fn, best_pg, best_score = "", None, None, 0.0
+    for ch in chunks:
+        for clause in _split_clauses(ch.page_content):
+            score = _containment_score(q, _norm(clause))
+            if score > best_score:
+                best_clause = clause
+                best_fn = ch.metadata.get("filename")
+                best_pg = ch.metadata.get("page_number")
+                best_score = score
+    if best_score >= EVIDENCE_MATCH_THRESHOLD:
+        return best_clause, best_fn, best_pg, best_score
+    return "", None, None, best_score
 
 
 # ── Step 1: requirement extraction ─────────────────────────────────────────
@@ -206,8 +270,8 @@ async def judge_requirement(
         status = NEEDS_REVIEW
 
     quote = (data.get("policy_quote") or "").strip()
-    filename, page = _match_quote_to_chunk(quote, policy_chunks)
-    # A cited quote that matches NO retrieved chunk is a hallucination signal:
+    clause, filename, page, score = _verify_evidence(quote, policy_chunks)
+    # A cited quote that grounds in NO retrieved clause is a hallucination signal:
     # keep it visible but flag for review rather than presenting it as evidence.
     if quote and filename is None and status in ("Covered", "Partial"):
         status = NEEDS_REVIEW
@@ -223,8 +287,10 @@ async def judge_requirement(
         rationale=str(data.get("rationale", "")).strip(),
         confidence=confidence,
         policy_quote=quote,
+        policy_clause=clause,
         policy_filename=filename,
         policy_page=page,
+        evidence_score=round(score, 3),
     )
 
 

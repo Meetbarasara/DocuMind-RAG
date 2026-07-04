@@ -27,6 +27,7 @@ from src.components.compliance import NEEDS_REVIEW, Requirement, judge_requireme
 from src.components.config import Config
 from src.components.evalution import (
     compliance_metrics,
+    evidence_faithfulness,
     load_goldset,
     regression_failures,
 )
@@ -72,6 +73,10 @@ async def evaluate_goldset(gold, judge_llm, *, delay: float = 1.0, retries: int 
         rows.append({
             "id": req.id, "expected": row["expected_status"],
             "predicted": verdict.status, "confidence": verdict.confidence,
+            # evidence grounding: filename is set only when the quote grounded to a
+            # real policy clause (compliance._verify_evidence cleared threshold).
+            "evidence_score": verdict.evidence_score,
+            "verified": verdict.policy_filename is not None,
         })
         if delay:
             await asyncio.sleep(delay)                          # pace to stay under the rate limit
@@ -91,8 +96,13 @@ async def run(goldset_path: str) -> dict:
         print(f"  {mark} [{r['id']:>3}] expected={r['expected']:<9} predicted={r['predicted']}")
 
     metrics = compliance_metrics(preds, labels)
+    faithfulness = evidence_faithfulness(preds, [r["verified"] for r in rows])
     return {
-        "summary": {"goldset": str(goldset_path), "judge": f"{cfg.JUDGE_PROVIDER}/{cfg.JUDGE_MODEL}", **metrics},
+        "summary": {
+            "goldset": str(goldset_path),
+            "judge": f"{cfg.JUDGE_PROVIDER}/{cfg.JUDGE_MODEL}",
+            **metrics, **faithfulness,
+        },
         "rows": rows,
     }
 
@@ -100,6 +110,8 @@ async def run(goldset_path: str) -> dict:
 def _flat_metrics(summary: dict) -> dict:
     """Flatten to {metric: float} for the regression gate (reuses run_eval's comparator)."""
     flat = {"accuracy": summary.get("accuracy", 0.0), "macro_f1": summary.get("macro_f1", 0.0)}
+    if "evidence_faithfulness" in summary:
+        flat["evidence_faithfulness"] = summary["evidence_faithfulness"]
     for status, m in (summary.get("per_status") or {}).items():
         flat[f"f1_{status}"] = m["f1"]
     return flat
@@ -113,6 +125,9 @@ def _print_summary(out: dict) -> None:
     print(f"gold set: {s['goldset']}  (n={s['n']})   judge: {s['judge']}")
     print(f"\naccuracy : {s['accuracy']:.3f}")
     print(f"macro-F1 : {s['macro_f1']:.3f}")
+    if "evidence_faithfulness" in s:
+        print(f"evidence faithfulness : {s['evidence_faithfulness']:.3f}  "
+              f"(over {s.get('n_grounded', 0)} evidence-bearing verdicts)")
     print("\nper-status  (precision / recall / f1 / support):")
     for status, m in s["per_status"].items():
         print(f"  {status:<9} {m['precision']:.2f} / {m['recall']:.2f} / {m['f1']:.2f}  (n={m['support']})")

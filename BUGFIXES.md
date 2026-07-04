@@ -1209,3 +1209,36 @@ A provider's model catalog is account- and time-specific, so the honest fix is t
 
 ### Explain it simply (interview answer)
 My code was set up to ask a specific AI model to be the "judge," but I'd written down a name for it that isn't available on my account — so every request bounced back "no such model." My automated tests didn't catch it because they fake the AI's reply instead of actually calling it; the problem only showed up the first time I ran it for real. I asked the service "which models *can* I use?", picked the strongest one it actually offers, and made the name easy to change later. Now the same run that produced nothing produces a full, cited compliance report.
+
+
+## Compliance citation verification was chunk-level substring matching — brittle in both directions
+
+**Status:** Fixed 2026-07-04
+
+### Symptom
+The gap table's headline feature is "your policy clause vs the RBI clause, side by side, each cited." But the evidence citation was only ever verified by a whole-*chunk* substring test, which failed two ways:
+1. **False negatives (real evidence dropped):** the judge quotes a policy sentence faithfully but with a benign edit — drops an "are", fixes a typo, the PDF extractor inserted a stray space — and the exact-substring match misses. A *correct* Covered/Partial verdict then gets silently downgraded to "Needs review", eroding trust in a tool whose whole job is to be trustworthy.
+2. **Imprecise citation:** even when it matched, it returned the whole retrieved chunk's page and the UI showed the model's (possibly reworded) quote — not the verbatim source clause. A chunk is ~512 tokens = many clauses, so "your clause" wasn't pinned to an actual clause.
+
+### Root Cause
+`_match_quote_to_chunk` (compliance.py) normalised whitespace/case, then tested whether the quote — **or just its first 40 characters** — was a substring of a chunk's full text, returning that chunk's `(filename, page)`. That's binary and coarse: any edit inside the quote breaks the exact match (false negative), while the 40-char prefix fallback could *pass* a quote whose divergent tail was fabricated (false positive). It also had no notion of a clause — the smallest thing it could point at was a 512-token chunk.
+
+### Fix
+Replaced it with `_verify_evidence(quote, chunks)`, which grounds the quote to a specific **clause**:
+- `_split_clauses` breaks each chunk on sentence/clause punctuation and newlines (short chunks stay one clause, so nothing regresses).
+- `_containment_score` = `sum(difflib matching-block sizes) / len(quote)` — "how much of the quote is contiguously present in this clause", normalised by quote length so a short quote fully inside a long clause still scores 1.0.
+- The best clause across all chunks wins; a citation (clause + filename + page) is returned **only** when the score clears `EVIDENCE_MATCH_THRESHOLD = 0.8`, so an ungrounded quote still yields no citation (the hallucination guard is preserved, now score-based). The verbatim clause and the raw `evidence_score` are carried on the `Verdict` and out through the API row (`policy_clause`, `evidence_score`, `evidence_verified`).
+
+Also extended the compliance eval with an **evidence-faithfulness** metric (`evalution.evidence_faithfulness`): of the verdicts that assert a policy clause (Covered/Partial/Conflict — Gap correctly cites nothing and is excluded), the fraction whose quote actually grounded. Wired into `run_compliance_eval`'s summary and the `--check` regression gate.
+
+### Why this approach
+A graded containment score is the right middle ground: strict enough that a quote grounded in nothing scores near zero and stays flagged, loose enough that faithful reformatting no longer triggers a spurious "Needs review". `difflib` (stdlib) keeps it keyless and deterministic — no embeddings, no extra dependency, unit-testable without any live LLM. Clause-level granularity is what makes the side-by-side honest: we now show the *actual* source sentence, not a 512-token blob or the model's paraphrase. Honest scope note: a subtly doctored number inside an otherwise-verbatim quote (e.g. "three years" where the source says "five") still scores high — catching that is a *faithfulness* concern the eval metric measures across the set, not something a per-row substring check can reliably detect; the sharpened judge prompt is what guards the Conflict direction.
+
+### Verification
+- Red first: a faithful-but-reformatted quote (drops "are") was downgraded to "Needs review" under the old code (`AssertionError: 'Needs review' == 'Covered'`); green after.
+- New unit tests (keyless, mocked judge): clause splitting, verbatim → score 1.0, clause pinpointing in a multi-sentence chunk, ungrounded quote → score < threshold → no citation, best-of-several-chunks, and the empty-quote path. Plus the `evidence_faithfulness` pure metric (excludes Gaps, penalises an ungrounded Covered, 1.0 when nothing bearing) and its harness wiring.
+- Existing anti-hallucination test (`test_hallucinated_quote_on_covered_is_flagged_for_review`) still green — the guard is preserved.
+- Full suite **215 passed**; ruff + pyflakes clean on the changed files.
+
+### Explain it simply (interview answer)
+My compliance tool shows "here's the exact sentence in your policy, and here's the rule it satisfies." To trust that, I check the AI's quoted sentence really exists in your document. The old check demanded a *character-perfect* match against a big page-sized block of text — so if the AI quoted your policy faithfully but tidied up one word, the check failed and wrongly stamped a correct finding "needs review"; and the best it could point at was a whole page-sized blob, not the one sentence. I changed it to find the single sentence that best matches the quote and score *how much* of the quote is actually in it: a real quote (even lightly reworded) scores high and gets cited to that exact sentence; a made-up quote scores near zero and gets flagged. I also added a benchmark that measures, across a labeled set, how often the cited evidence truly grounds — so I can prove the trustworthiness number, not just claim it.

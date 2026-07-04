@@ -8,10 +8,13 @@ import pytest
 from langchain_core.documents import Document
 
 from src.components.compliance import (
+    EVIDENCE_MATCH_THRESHOLD,
     NEEDS_REVIEW,
     Requirement,
     Verdict,
     _parse_json_object,
+    _split_clauses,
+    _verify_evidence,
     extract_requirements,
     judge_requirement,
     run_check,
@@ -42,6 +45,64 @@ def test_parse_plain_fenced_and_prose_wrapped():
     assert _parse_json_object('Sure! Here it is: {"a": 3} — done.')["a"] == 3
     with pytest.raises(ValueError):
         _parse_json_object("no json here")
+
+
+# ── Clause-level citation verification ──────────────────────────────────────
+
+def test_split_clauses_breaks_on_sentence_boundaries():
+    text = "Clause A about OVD. Clause B about retention for five years; extra. Short"
+    clauses = _split_clauses(text)
+    assert "Clause A about OVD." in clauses
+    assert any("retention for five years" in c for c in clauses)
+    assert "Short" not in clauses          # a short trailing fragment can't cite anything
+
+
+def test_split_clauses_short_chunk_is_one_clause():
+    assert _split_clauses("We check an OVD.") == ["We check an OVD."]
+    assert _split_clauses("   ") == []
+
+
+def test_verify_evidence_verbatim_quote_scores_full():
+    chunk = _policy("We verify an OVD for every customer at onboarding.")
+    clause, fn, pg, score = _verify_evidence(
+        "We verify an OVD for every customer at onboarding.", [chunk])
+    assert score == 1.0
+    assert fn == "acme_kyc_policy.pdf" and pg == 7
+    assert clause == "We verify an OVD for every customer at onboarding."
+
+
+def test_verify_evidence_pinpoints_the_clause_not_the_whole_chunk():
+    # A multi-clause chunk: the quote grounds to ONE sentence, and we cite that
+    # sentence — not the 3-sentence blob (the whole point of clause-level).
+    chunk = _policy(
+        "Customers submit an OVD at onboarding. Records are retained for five years "
+        "after closure. Risk is assessed for every customer."
+    )
+    clause, fn, pg, score = _verify_evidence(
+        "Records are retained for five years after closure.", [chunk])
+    assert score >= EVIDENCE_MATCH_THRESHOLD
+    assert clause == "Records are retained for five years after closure."
+    assert "OVD" not in clause and "Risk" not in clause          # not the neighbours
+
+
+def test_verify_evidence_ungrounded_quote_scores_low_and_yields_no_citation():
+    chunk = _policy("We check an OVD for every customer.")
+    clause, fn, pg, score = _verify_evidence("We perform a retina scan of the iris.", [chunk])
+    assert score < EVIDENCE_MATCH_THRESHOLD
+    assert (clause, fn, pg) == ("", None, None)                  # a hallucination cites nothing
+
+
+def test_verify_evidence_empty_quote_is_no_match():
+    assert _verify_evidence("", [_policy("anything")]) == ("", None, None, 0.0)
+
+
+def test_verify_evidence_picks_the_best_of_several_chunks():
+    a = _policy("Unrelated onboarding text about photographs.", page=1, filename="a.pdf")
+    b = _policy("KYC records are kept for five years after the account closes.", page=4, filename="b.pdf")
+    clause, fn, pg, score = _verify_evidence(
+        "records are kept for five years after the account closes", [a, b])
+    assert fn == "b.pdf" and pg == 4                             # matched the right chunk
+    assert score >= EVIDENCE_MATCH_THRESHOLD
 
 
 # ── Requirement extraction ─────────────────────────────────────────────────
@@ -105,6 +166,20 @@ async def test_hallucinated_quote_on_covered_is_flagged_for_review():
     llm = _FakeLLM('{"status":"Covered","policy_quote":"We do a retina scan.","confidence":0.7,"rationale":"x"}')
     v = await judge_requirement(Requirement(id="r3", text="Biometric check"), [_policy("We check an OVD.")], llm)
     assert v.status == NEEDS_REVIEW  # can't verify the citation -> don't present it as evidence
+
+
+@pytest.mark.asyncio
+async def test_lightly_reformatted_faithful_quote_still_verifies():
+    # The policy says "...records ARE retained for five years..."; the judge
+    # quotes it faithfully but drops "are". An exact-substring match wrongly flags
+    # this real evidence as unverifiable; clause-level grounding must accept it.
+    chunk = _policy("Client records are retained for five years after the account is closed.")
+    llm = _FakeLLM('{"status":"Covered","policy_quote":"Client records retained for five years after the account is closed.","confidence":0.9,"rationale":"ok"}')
+    v = await judge_requirement(Requirement(id="r", text="Retain records five years"), [chunk], llm)
+    assert v.status == "Covered"                       # NOT downgraded to Needs review
+    assert v.policy_filename == "acme_kyc_policy.pdf"  # citation still derived
+    assert v.evidence_score >= EVIDENCE_MATCH_THRESHOLD
+    assert "five years" in v.policy_clause.lower()     # the verbatim source clause, surfaced
 
 
 @pytest.mark.asyncio

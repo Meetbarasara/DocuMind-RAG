@@ -62,8 +62,11 @@ def _row(req: Requirement, verdict) -> dict:
     """Serialise one (requirement, verdict) into a gap-table row.
 
     The RBI reference (rbi_page/section) is carried from the requirement's
-    origin; the policy citation (filename/page) is the judge's evidence quote
-    matched back to a real chunk (see compliance.py) — never a model-invented page.
+    origin; the policy citation is the judge's evidence quote grounded back to a
+    specific policy *clause* (see compliance._verify_evidence) — never a
+    model-invented page. ``policy_clause`` is the verbatim source sentence (what
+    the UI shows side-by-side); ``evidence_verified`` says the quote actually
+    grounded in a retrieved clause.
     """
     return {
         "requirement_id": req.id,
@@ -74,8 +77,11 @@ def _row(req: Requirement, verdict) -> dict:
         "confidence": verdict.confidence,
         "rationale": verdict.rationale,
         "policy_quote": verdict.policy_quote,
+        "policy_clause": verdict.policy_clause,
         "policy_filename": verdict.policy_filename,
         "policy_page": _to_int(verdict.policy_page),
+        "evidence_score": verdict.evidence_score,
+        "evidence_verified": verdict.policy_filename is not None,
     }
 
 

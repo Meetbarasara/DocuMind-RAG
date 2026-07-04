@@ -9,7 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.run_compliance_eval import _flat_metrics, evaluate_goldset
-from src.components.evalution import COMPLIANCE_STATUSES, compliance_metrics, load_goldset
+from src.components.evalution import (
+    COMPLIANCE_STATUSES,
+    compliance_metrics,
+    evidence_faithfulness,
+    load_goldset,
+)
 
 _GOLDSET = Path(__file__).resolve().parents[1] / "data" / "eval" / "compliance_goldset.v1.jsonl"
 
@@ -70,6 +75,40 @@ def test_flat_metrics_exposes_per_status_f1_for_the_gate():
     assert set(flat) >= {"f1_Covered", "f1_Partial", "f1_Gap", "f1_Conflict"}
 
 
+def test_flat_metrics_includes_evidence_faithfulness_when_present():
+    summary = {"accuracy": 1.0, "macro_f1": 1.0, "evidence_faithfulness": 0.9,
+               "per_status": {"Covered": {"f1": 1.0}}}
+    flat = _flat_metrics(summary)
+    assert flat["evidence_faithfulness"] == 0.9        # gated when a run reports it
+    assert flat["f1_Covered"] == 1.0
+
+
+# ── evidence_faithfulness (pure) ─────────────────────────────────────────────
+
+def test_evidence_faithfulness_excludes_gaps_from_the_denominator():
+    # Gap correctly cites nothing -> excluded; the two grounded verdicts both
+    # verify -> perfect faithfulness despite the unverified Gap.
+    m = evidence_faithfulness(["Covered", "Gap", "Conflict"], [True, False, True])
+    assert m["evidence_faithfulness"] == 1.0
+    assert m["n_grounded"] == 2
+
+
+def test_evidence_faithfulness_penalises_an_ungrounded_covered():
+    m = evidence_faithfulness(["Covered", "Partial"], [False, True])
+    assert m["evidence_faithfulness"] == 0.5           # 1 of 2 grounded
+    assert m["n_grounded"] == 2
+
+
+def test_evidence_faithfulness_is_one_when_nothing_bearing():
+    m = evidence_faithfulness(["Gap", "Needs review"], [False, False])
+    assert m["evidence_faithfulness"] == 1.0 and m["n_grounded"] == 0
+
+
+def test_evidence_faithfulness_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        evidence_faithfulness(["Covered"], [True, False])
+
+
 # ── the shipped gold set ────────────────────────────────────────────────────
 
 def test_goldset_is_well_formed_and_covers_all_four_statuses():
@@ -114,6 +153,27 @@ def test_evaluate_goldset_maps_verdicts_to_predictions():
     assert preds == ["Gap", "Conflict", "Covered"]          # exact wiring, incl. Gap's empty-quote path
     assert compliance_metrics(preds, labels)["accuracy"] == 1.0
     assert [r["id"] for r in rows] == ["g", "x", "c"]
+
+
+def test_evaluate_goldset_records_evidence_verification():
+    """Each row carries whether its quote grounded, so the harness can compute
+    evidence faithfulness: a Gap's empty quote is unverified; a Covered whose
+    quote is in the excerpt verifies."""
+    gold = [
+        {"id": "g", "requirement": "Identify the beneficial owner of legal entities.",
+         "policy_excerpt": "Some unrelated onboarding text.", "expected_status": "Gap"},
+        {"id": "c", "requirement": "Identify every customer with an OVD.",
+         "policy_excerpt": "At onboarding, every customer must submit an Officially Valid Document (OVD).",
+         "expected_status": "Covered"},
+    ]
+    preds, _, rows = asyncio.run(evaluate_goldset(gold, _FakeLLM(_keyword_judge), delay=0))
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["g"]["verified"] is False              # Gap: empty quote grounds to nothing
+    assert by_id["c"]["verified"] is True               # Covered: quote grounds in the excerpt
+    assert by_id["c"]["evidence_score"] >= 0.8
+    # and the harness metric agrees: the one evidence-bearing verdict is grounded
+    assert evidence_faithfulness(preds, [r["verified"] for r in rows]) == {
+        "evidence_faithfulness": 1.0, "n_grounded": 1}
 
 
 def test_transient_needs_review_is_retried():
