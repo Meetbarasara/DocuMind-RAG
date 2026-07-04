@@ -28,6 +28,11 @@ export default function GapRowCard({ row }: { row: Row }) {
   const policyCite = row.policy_filename
     ? `${row.policy_filename}${row.policy_page != null ? ` · p.${row.policy_page}` : ""}`
     : null;
+  // Show the verbatim source clause when we have it; fall back to the model's
+  // quote for older persisted checks. "Verified" = the quote grounded in a real
+  // policy clause (default to "has a citation" when the flag is absent).
+  const clauseText = row.policy_clause || row.policy_quote;
+  const verified = row.evidence_verified ?? row.policy_filename != null;
 
   return (
     <div className={`${cls} glass overflow-hidden rounded-2xl`}>
@@ -62,16 +67,29 @@ export default function GapRowCard({ row }: { row: Row }) {
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
                 Your policy
               </div>
-              {row.policy_quote ? (
+              {clauseText ? (
                 <>
                   <p className="text-sm leading-relaxed text-[var(--fg)]">
-                    “{row.policy_quote}”
+                    “{clauseText}”
                   </p>
-                  {policyCite && (
-                    <div className="mt-2 font-mono text-xs text-[var(--muted)]">
-                      {policyCite}
-                    </div>
-                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    {policyCite && (
+                      <span className="font-mono text-xs text-[var(--muted)]">
+                        {policyCite}
+                      </span>
+                    )}
+                    {verified && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-white/12 bg-white/5 px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]"
+                        title="The cited quote was matched to this exact clause in your policy."
+                      >
+                        <svg viewBox="0 0 20 20" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.2">
+                          <path d="M5 10.5l3.2 3.2L15 7" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        Verified
+                      </span>
+                    )}
+                  </div>
                 </>
               ) : (
                 <p className="text-sm italic text-[var(--muted)]">

@@ -16,8 +16,13 @@ export interface GapRow {
   confidence: number;
   rationale: string;
   policy_quote: string;
+  // Clause-level citation verification (see compliance._verify_evidence). Optional
+  // so persisted checks from before this change still render.
+  policy_clause?: string; // the verbatim source clause the quote grounds to
   policy_filename: string | null;
   policy_page: number | null;
+  evidence_score?: number; // 0-1 grounding score
+  evidence_verified?: boolean; // the quote grounded in a real clause
 }
 
 export interface Summary {

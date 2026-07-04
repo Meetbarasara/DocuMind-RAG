@@ -21,7 +21,11 @@ export const DEMO_ROWS: GapRow[] = [
     rationale: "Policy requires a verified OVD for every customer at onboarding.",
     policy_quote:
       "At onboarding, every customer must submit an Officially Valid Document (OVD) - passport, Aadhaar, voter ID or driving licence. No account is opened without a verified OVD on file.",
-    policy_filename: P, policy_page: 1,
+    // clause-level: the quote spans two sentences; the citation pinpoints the one
+    // clause that grounds the requirement (shows off _verify_evidence).
+    policy_clause:
+      "At onboarding, every customer must submit an Officially Valid Document (OVD) - passport, Aadhaar, voter ID or driving licence.",
+    policy_filename: P, policy_page: 1, evidence_verified: true, evidence_score: 1,
   },
   {
     requirement_id: "req-2",
