@@ -1,487 +1,342 @@
 <div align="center">
 
-# 🧠 DocuMind
+# ⚖️ KYC Compliance Assistant
 
-### AI-Powered Document Intelligence Platform
+### Cited, requirement-by-requirement gap analysis for RBI KYC
 
-*Ask anything about your documents. Get cited, grounded answers in seconds.*
+*Upload your internal KYC policy, pick an RBI circular, and get a **cited gap table** — every requirement judged **Covered / Partial / Gap / Conflict**, each finding traced to the exact clause — in seconds.*
 
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.42+-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io)
-[![Pinecone](https://img.shields.io/badge/Pinecone-Vector_DB-000000?style=flat&logo=pinecone&logoColor=white)](https://pinecone.io)
+Built on **DocuMind**, a production-grade Retrieval-Augmented Generation engine.
+
+[![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-async_SSE-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Next.js](https://img.shields.io/badge/Next.js_16-React_19-000000?style=flat&logo=nextdotjs&logoColor=white)](https://nextjs.org)
+[![Tailwind](https://img.shields.io/badge/Tailwind-v4-38BDF8?style=flat&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
+[![Cerebras](https://img.shields.io/badge/Judge-Cerebras_gpt--oss--120b-F55036?style=flat)](https://cerebras.ai)
 [![Groq](https://img.shields.io/badge/Groq-Llama_3.1_8B-F55036?style=flat&logo=groq&logoColor=white)](https://groq.com)
-[![Embeddings](https://img.shields.io/badge/Embeddings-local_all--mpnet-FFD21E?style=flat&logo=huggingface&logoColor=black)](https://huggingface.co/sentence-transformers/all-mpnet-base-v2)
+[![Pinecone](https://img.shields.io/badge/Pinecone-Vector_DB-000000?style=flat&logo=pinecone&logoColor=white)](https://pinecone.io)
 [![Supabase](https://img.shields.io/badge/Supabase-Auth_+_Storage-3ECF8E?style=flat&logo=supabase&logoColor=white)](https://supabase.io)
 [![CI](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml/badge.svg)](https://github.com/Meetbarasara/DocuMind-RAG/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
+<!-- Add a demo GIF of the streamed gap table here, e.g. ![demo](docs/demo.gif) -->
+
 ---
 
-## What is DocuMind?
+## The problem
 
-DocuMind is a production-grade **Retrieval-Augmented Generation (RAG)** platform that lets you upload a document (PDF, DOCX, or TXT) and have an intelligent conversation with its contents.
+A compliance officer at an Indian fintech has to check their internal KYC policy against the **RBI Master Direction on KYC** — line by line, requirement by requirement. Does the policy cover Officially Valid Documents? Video-KYC geo-tagging? The 5-year record-retention minimum? It's slow, manual, and a missed requirement can mean a fine.
 
-Every answer is:
-- **Grounded** — only uses information from your uploaded documents
-- **Cited** — every claim links back to the exact source file and page number
-- **Streamed** — tokens arrive in real-time, no waiting for the full response
-- **Contextual** — multi-turn conversation with automatic query rewriting for follow-ups
+This tool does that check for them: **upload the policy, pick a regulation, and get a cited gap table** where every requirement is judged and every finding points to the exact clause in *your* policy and *its* RBI origin — side by side.
+
+> **Assisted review, not legal advice.** Every finding is cited to a clause for a human to verify. Confidence scores and a "Needs review" state make uncertainty explicit — this augments a compliance officer, it never signs off for one.
+
+---
+
+## What it looks like
+
+Run a check and a cited gap table streams in, one requirement at a time:
+
+| Requirement (RBI) | Status | Your policy clause | RBI clause |
+|---|---|---|---|
+| Identify every customer with an OVD at onboarding | 🟢 **Covered** | *"At onboarding, every customer must submit an Officially Valid Document (OVD)…"* — `acme_kyc_policy.pdf · p.1` ✓ verified | §1 · p.1 |
+| Maintain client records ≥ 5 years after closure | 🟣 **Conflict** | *"Records… are retained for a period of three years after the account is closed."* — `acme_kyc_policy.pdf · p.2` ✓ verified | §8 · p.3 |
+| Identify beneficial owners of legal-entity customers | 🔴 **Gap** | *No matching clause found in your policy.* | §7 · p.2 |
+
+- **🟢 Covered** — fully meets the requirement  ·  **🟡 Partial** — addresses it but incomplete/vague  ·  **🔴 Gap** — not addressed  ·  **🟣 Conflict** — a concrete rule that contradicts it (e.g. a 3-year retention where 5 is required)
+- A **status summary** counts up as rows stream; each row expands to the **your-clause-vs-RBI-clause** comparison, cited on both sides.
+
+---
+
+## Why it's different: it's measured
+
+Most RAG demos can't tell you how *correct* they are. This one is scored against a labeled benchmark, gated in CI:
+
+- **Gap-analysis accuracy `0.92` · macro-F1 `0.91`** over the four statuses, on a labeled `(requirement, policy) → status` gold set. Macro-F1 so a rare-but-critical **Conflict** counts as much as a common Covered — a tool that never flags conflicts should score poorly even if it's "mostly right."
+- **Evidence faithfulness** — the fraction of findings whose cited quote actually grounds in a real policy clause (clause-level citation verification, below).
+- A committed baseline arms a **`run_compliance_eval --check` regression gate**, so a prompt change that quietly under-calls Conflicts fails the build.
+
+*In a domain where a wrong answer is a fine, being able to quantify correctness is the whole pitch.*
+
+---
+
+## How a gap check works
+
+```
+Upload KYC policy ─┐
+                   ├─▶ pick an RBI circular ─▶ Run check
+Regulation (seeded)┘
+     │
+     │  requirements are extracted ONCE per regulation and cached
+     ▼  then, for each requirement:
+ [Retrieve]  top policy chunks — from YOUR private namespace only
+     │       (hybrid dense+sparse + Cohere rerank, the 0.97-hit@k engine)
+     ▼
+ [Judge]     Cerebras gpt-oss-120b → { status, evidence quote, confidence, rationale }
+     │       strict JSON; a bad row degrades to "Needs review", never crashes the check
+     ▼
+ [Verify]    ground the quote to a specific policy CLAUSE (difflib containment).
+     │       Ungrounded quote → no citation → flagged for review (anti-hallucination)
+     ▼
+ SSE ▶ one cited row at a time ─▶ persisted to Supabase
+                                   (re-open a past check instantly, no re-run)
+```
+
+Key design decisions (each prevents a specific failure):
+
+- **The RBI citation is carried from the requirement's origin, never asked of the judge** — so the judge can't hallucinate a legal citation. It only cites *your policy* evidence.
+- **Clause-level citation verification.** The judge's evidence quote is grounded to a specific clause in a retrieved chunk (not a fuzzy 512-token blob), with a graded containment score. A faithful-but-reworded quote still verifies; a fabricated one scores near zero and is flagged.
+- **Change-tracking — re-check only what changed.** When a circular is updated, `diff_requirements` (pure text-similarity, no LLM) classifies each requirement **added / changed / unchanged / removed**; `POST /api/compliance/recheck` re-judges only the added + changed ones and carries the rest forward. A ~34-requirement re-run (≈15 min on a free judge tier) becomes a few calls.
+- **Route models by difficulty.** The strong, slow **Cerebras 120B** does the hard judging; **Groq 8B** does cheap query rewriting + the Ask screen; **local mpnet** does retrieval. All on free tiers.
+
+---
+
+## Features
+
+**Compliance**
+
+| Feature | Details |
+|---|---|
+| ⚖️ **Cited gap table** | Requirement-by-requirement Covered / Partial / Gap / Conflict, streamed row-by-row, each finding cited to a clause |
+| 🔎 **Clause-level citation verification** | The judge's evidence quote is grounded to a specific policy clause; ungrounded quotes are flagged "Needs review" |
+| 🔄 **Change-tracking** | Diff a new circular against the prior check and re-judge only the deltas (added/changed), carrying unchanged verdicts forward |
+| 🧑‍⚖️ **Swappable judge** | Cerebras `gpt-oss-120b` via an OpenAI-compatible endpoint; `JUDGE_PROVIDER`/`JUDGE_MODEL` swap to Groq/OpenRouter/a paid tier with a one-line env change |
+| 📚 **Library** | Manage your policy documents (upload / delete) and browse available regulations |
+| 💬 **Ask** | A focused Q&A fallback over your own policy docs, cited and streamed |
+| 📊 **Compliance eval** | Labeled gap-analysis gold set → accuracy + macro-F1 + evidence faithfulness, gated in CI |
+| 🧱 **Clause-aware chunking** | Regulations are chunked on clause/section boundaries (not fixed windows) so requirements aren't split mid-clause |
+
+**RAG foundation (DocuMind)**
+
+| Feature | Details |
+|---|---|
+| 🔍 **Hybrid retrieval + rerank** | Dense (or Pinecone native sparse+dense) → Cohere Rerank; retrieval **Hit@k 0.97** on a 4-doc gold set |
+| ✍️ **Grounded, cited, streamed answers** | Every claim cited to file + page, verified against the real retrieved sources, delivered token-by-token over SSE |
+| ⚡ **Caching** | Redis exact-match + semantic (near-duplicate question) cache — optional, off without `REDIS_URL` |
+| 📈 **Observability** | LangSmith tracing (per-stage timings, token/cost) + 👍/👎 feedback loop — optional |
+| 🔒 **Multi-user auth + isolation** | Supabase Auth (JWT); each company's policies live in a **private Pinecone namespace**; regulations in a shared one |
+| 🐳 **Containerized + evaluated** | Docker Compose (FastAPI + Next.js), and *two* CI-gated eval suites (compliance + RAG) |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Streamlit Frontend                         │
-│         Login · Chat (SSE streaming) · Document Manager         │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ HTTP / SSE
-┌────────────────────────▼────────────────────────────────────────┐
-│                    FastAPI Backend                               │
-│   /api/auth/*    /api/documents/*    /api/chat/*    /health     │
-└──────┬─────────────────┬──────────────────┬─────────────────────┘
-       │                 │                  │
-┌──────▼──────┐  ┌───────▼───────┐  ┌──────▼──────────────────────┐
-│  Supabase   │  │  RAG Pipeline │  │       RAG Pipeline           │
-│  Auth +     │  │  Ingestion    │  │  Cache → Retrieve → Rerank   │
-│  Storage    │  │  (background) │  │  → Generate · Citations      │
-└─────────────┘  └───────┬───────┘  └──────┬──────────────────────┘
-                         │                  │
-                ┌────────▼──────────────────▼────────┐
-                │          External Services          │
-                │  Pinecone (vectors) · Groq (LLM)    │
-                │  + optional: Cohere (rerank) ·       │
-                │    Redis (cache) · LangSmith (trace) │
-                └────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│      Next.js 16 UI (glassmorphism)   ·   http://localhost:3000 │
+│   Gap Check (streamed cited table) · Ask · Library            │
+└────────────────────────────┬──────────────────────────────────┘
+                             │ HTTP / SSE  (Bearer JWT)
+┌────────────────────────────▼──────────────────────────────────┐
+│                      FastAPI backend                           │
+│  /api/compliance/*   /api/chat/*   /api/documents/*   /auth/*  │
+└───────┬────────────────────┬───────────────────┬──────────────┘
+        │                    │                   │
+┌───────▼───────┐   ┌────────▼─────────┐  ┌──────▼──────────────┐
+│  Gap engine   │   │  RAG pipeline    │  │      Supabase       │
+│  extract →    │   │  retrieve →      │  │  Auth · Storage ·   │
+│  judge →      │   │  rerank →        │  │  Postgres           │
+│  verify → SSE │   │  generate → SSE  │  │  (regulations,      │
+└───────┬───────┘   └────────┬─────────┘  │   checks, docs…)    │
+        │                    │            └─────────────────────┘
+┌───────▼────────────────────▼──────────────────────────────────┐
+│   Models — routed by difficulty, all free-tier                 │
+│   Cerebras gpt-oss-120b = the judge   ·   Groq 8B = rewrite/Ask │
+│   local all-mpnet = embeddings        ·   Cohere = rerank      │
+│   Pinecone (ONE index): ns "regulations" (shared) + per-user   │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-### RAG Pipeline — Step by Step
-
-```
-Document Upload
-      │
-      ▼
- [Accept]     ── validate, schedule ──▶  202 + job id (returns immediately)
-      │
-      ▼ (background)
- [Ingestion]  ── PyMuPDF / python-docx ──▶  Per-page text + extracted images
-      │
-      ▼
- [Chunking]   ── 512 tiktoken tokens ──▶  LangChain Documents with metadata
-      │
-      ▼
- [Embedding]  ── all-mpnet-base-v2 (local) ──▶  768-dim vectors (+ sparse, if hybrid is on)
-      │
-      ▼
- [Pinecone]   ── namespace = user_id ──▶  Per-user vector isolation; job → completed
-      │
-User Question
-      │
-      ▼
- [Cache?]     ── Redis exact/semantic match ──▶  HIT: answer in ms, skip everything below
-      │ MISS
-      ▼
- [Rewrite]    ── Llama-3.1-8B (Groq) ──▶  Standalone query (resolves pronouns)
-      │
-      ▼
- [Retrieve]   ── dense cosine, or native hybrid ──▶  Top-K candidates above threshold
-      │
-      ▼
- [Rerank]     ── Cohere Rerank API ──▶  Most relevant few, reordered
-      │
-      ▼
- [Generate]   ── Llama-3.1-8B (Groq) ──▶  Grounded, cited answer
-      │
-      ▼
- SSE Stream ──▶  Token-by-token to UI; cache the answer; 👍/👎 → LangSmith
-```
+**One vector index, split by namespace** — RBI circulars are ingested once into a shared `regulations` namespace; each company's policies stay in their own private `<user_id>` namespace. A check only ever retrieves from *your* namespace, so a gap check can never leak one company's policy to another.
 
 ---
 
-## Features
-
-| Feature | Details |
-|---|---|
-| 📄 **Document ingestion** | PDF, DOCX, TXT via PyMuPDF + python-docx (images extracted too); upload returns immediately, ingestion runs in the background |
-| 🧩 **Token-based chunking** | Token-boundary splitting via tiktoken — predictable context size + cost |
-| 🔍 **Hybrid retrieval** | Dense (cosine) search, or Pinecone *native* server-side sparse+dense fusion (off by default — needs a dotproduct index) |
-| 🎯 **Re-ranking** | Cohere Rerank API narrows the candidate set to the most relevant chunks (graceful fallback to retrieval order without a key) |
-| ✍️ **Query rewriting** | Automatic follow-up resolution using conversation history |
-| 💬 **Streaming responses** | Server-Sent Events (SSE) for real-time token delivery |
-| 🖼️ **Multimodal answers** | Pages with figures/tables are rendered as images; the LLM reads the actual page for those answers |
-| 📚 **Inline citations** | `[Source: filename, Page X]` in every answer, verified against the real retrieved sources |
-| ⚡ **Caching** | Redis exact-match + semantic (near-duplicate question) cache — repeat questions skip retrieval + the LLM entirely (off by default — needs `REDIS_URL`) |
-| 📊 **Observability** | LangSmith tracing (per-stage timings, token/cost) + a 👍/👎 feedback loop, both off by default — needs `LANGSMITH_*` |
-| 🧪 **Offline evaluation** | Retrieval (Hit@k/Recall@k/MRR) + RAGAS generation metrics against a versioned gold set, with a CI regression gate — see [`scripts/run_eval.py`](scripts/run_eval.py) |
-| 🔒 **Multi-user auth** | Supabase Auth (JWT) with per-user Pinecone namespace isolation |
-| ☁️ **Cloud storage** | Files stored in Supabase Storage, metadata in PostgreSQL |
-| 🐳 **Containerized** | `Dockerfile` + `docker-compose.yml` (API + frontend) |
-| 🔄 **CI pipeline** | GitHub Actions: lint → syntax check → import validation → tests |
-
----
-
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
 |---|---|
-| **LLM** | Groq `llama-3.1-8b-instant` (hosted, high free daily limits) |
+| **Frontend** | Next.js 16 (App Router, Turbopack) + React 19 + Tailwind v4, glassmorphism |
+| **Backend** | FastAPI + Uvicorn (async, SSE streaming) |
+| **The judge** | Cerebras `gpt-oss-120b` via an OpenAI-compatible endpoint (swappable) |
+| **Chat / rewrite LLM** | Groq `llama-3.1-8b-instant` (high free daily limits) |
 | **Embeddings** | Local `sentence-transformers/all-mpnet-base-v2` (768-dim, CPU, no API/quota) |
-| **Vector DB** | Pinecone (serverless; cosine, or dotproduct for native hybrid) |
+| **Vector DB** | Pinecone (namespace-isolated; dense, or dotproduct for native hybrid) |
 | **Re-ranking** | Cohere Rerank API (optional) |
-| **Caching** | Redis (optional — exact-match + semantic) |
-| **Observability** | LangSmith (optional — tracing, per-stage timing, feedback) |
-| **Document parsing** | PyMuPDF (PDF) + python-docx (DOCX) |
-| **RAG framework** | LangChain + `langchain-pinecone` |
+| **Auth + storage + DB** | Supabase (Auth, S3-compatible Storage, PostgreSQL with RLS) |
+| **Caching / tracing** | Redis (optional) · LangSmith (optional) |
+| **Parsing / chunking** | PyMuPDF + python-docx; token + clause/section-aware chunking |
 | **Settings** | `pydantic-settings` (fail-fast secret validation at startup) |
-| **Backend API** | FastAPI + Uvicorn |
-| **Frontend** | Streamlit |
-| **Auth + Storage** | Supabase (PostgreSQL + S3-compatible storage) |
-| **Evaluation** | RAGAS (offline harness, not a live endpoint) |
-| **HTTP client** | httpx (async SSE streaming) |
+| **Evaluation** | Custom gap-analysis metrics + RAGAS + retrieval metrics (offline, CI-gated) |
 | **Containers** | Docker + Docker Compose |
 
----
-
-## Project Structure
-
-```
-DocuMind/
-├── src/
-│   ├── components/
-│   │   ├── config.py          # pydantic-settings: typed, fail-fast, env-driven config
-│   │   ├── ingestion.py       # Document parsing & token-based chunking
-│   │   ├── embeddings.py      # local sentence-transformers embed + Pinecone upsert (dense or native hybrid)
-│   │   ├── retrieval.py       # Dense/hybrid search + Cohere re-rank
-│   │   ├── sparse.py          # Stateless lexical encoder for native hybrid (no extra dep)
-│   │   ├── generation.py      # Query rewriting + LLM generation + SSE + feedback run_id
-│   │   ├── cache.py           # Redis exact-match + semantic query cache
-│   │   ├── database.py        # Supabase auth + file storage + metadata
-│   │   └── evalution.py       # RAGAS + retrieval metrics (used by scripts/run_eval.py)
-│   ├── pipeline/
-│   │   └── pipeline.py        # End-to-end RAG orchestrator
-│   ├── api/
-│   │   ├── main.py            # FastAPI app + CORS + logging middleware
-│   │   ├── dependencies.py    # Singleton DI: Config, DB, Pipeline
-│   │   └── router/
-│   │       ├── auth.py        # POST /api/auth/{signup,login,logout,me}
-│   │       ├── documents.py   # Upload (background ingestion) + list + delete
-│   │       └── chat.py        # POST /api/chat/{query[/stream],feedback}
-│   ├── logger.py              # Rotating file + stream logger
-│   ├── exception.py           # Custom exception with traceback detail
-│   └── utils.py               # Filename sanitization, chat history formatting
-├── frontend/
-│   ├── app.py                 # Streamlit entry point + routing
-│   ├── utils.py               # httpx API client + session state helpers
-│   └── pages/
-│       ├── login.py           # Sign-in / Sign-up UI
-│       ├── chat.py            # Streaming chat + citations + 👍/👎 feedback
-│       └── documents.py       # Upload + list + delete documents
-├── scripts/
-│   └── run_eval.py            # Offline eval harness (retrieval metrics + RAGAS + CI gate)
-├── docs/                       # Sample documents for testing / the eval gold set
-├── data/eval/                  # Gold set + committed baseline for the CI regression gate
-├── logs/                       # Rotating log files (auto-created)
-├── .github/
-│   └── workflows/
-│       └── ci.yml             # GitHub Actions CI
-├── Dockerfile                  # Shared image for the API + frontend services
-├── docker-compose.yml          # Runs both services together
-├── supabase_migration.sql     # DB schema — run once in Supabase SQL Editor
-├── .env.example               # Environment variables template
-├── requirements.txt
-└── setup.py
-```
+> The original **Streamlit** UI (`frontend/`) still runs and is kept until the Next.js app reaches full parity, then retired. The Next.js app (`frontend-next/`) is the product.
 
 ---
 
-## Setup
+## Quick start
 
 ### Prerequisites
 
-- Python 3.11+ (or Docker, if you'd rather skip the venv — see step 4)
-- [Groq API key](https://console.groq.com/keys) — free, powers the LLM. (Embeddings run locally,
-  so there's no embedding API key to get.)
-- [Pinecone account](https://pinecone.io) — create an index named `documind` (dimension: `768`,
-  metric: `cosine`). Native hybrid search (off by default) needs a *second*, `dotproduct` index instead.
-  (The local `all-mpnet-base-v2` embedding model is 768-dim — if you have a 1536-dim index left over
-  from an OpenAI setup, re-create it at 768. The first run downloads the model, ~420MB, to your HF cache.)
-- [Supabase project](https://supabase.com) — free tier works fine
+- **Python 3.13** and **Node 20+** (or just Docker — see [DEPLOY.md](DEPLOY.md)).
+- [Groq API key](https://console.groq.com/keys) (LLM) · [Cerebras API key](https://cloud.cerebras.ai) (the judge) — both free.
+- [Pinecone](https://pinecone.io) index named `documind`, dimension `768`, metric `cosine` (or a `dotproduct` index for native hybrid). First run downloads the ~420 MB embedding model to your HF cache.
+- [Supabase](https://supabase.com) project (free tier).
 
-### 1. Clone & install
-
-Skip this step if you're using Docker (step 4, option A) — the image installs everything.
+### 1. Backend
 
 ```bash
 git clone https://github.com/Meetbarasara/DocuMind-RAG.git
 cd DocuMind-RAG
-python -m venv venv
+python -m venv venv && source venv/bin/activate   # Windows: .\venv\Scripts\activate
+pip install -e .                                   # add ".[dev]" for tests, ".[eval]" for RAGAS
 
-# Windows
-.\venv\Scripts\activate
-
-# macOS / Linux
-source venv/bin/activate
-
-pip install -e .
+cp .env.example .env    # then fill in the values below
 ```
-
-Running tests or linting locally? `pip install -e ".[dev]"` (pytest, ruff, pyflakes, fakeredis).
-Running the offline eval harness? `pip install -e ".[eval]"` (RAGAS — not needed for the live app).
-
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your credentials:
 
 ```env
 GROQ_API_KEY=gsk_...
+CEREBRAS_API_KEY=csk_...          # the compliance judge (optional secret; needed for checks)
 PINECONE_API_KEY=pcsk_...
 PINECONE_INDEX_NAME=documind
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_ANON_KEY=eyJ...
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
+CORS_ORIGINS=http://localhost:3000,http://localhost:8501
 ```
 
-### 3. Set up Supabase
+**Supabase, once:** create a private `documents` storage bucket, then run [`supabase_migration.sql`](supabase_migration.sql) in the SQL Editor (idempotent — creates the `regulations`, `compliance_checks`, `user_documents`, and `conversations`/`messages` tables with RLS).
 
-**Storage bucket** — not created automatically; create it once before the first upload (the app
-assumes `documents` already exists and will fail uploads otherwise):
-```python
-from supabase import create_client
-c = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-c.storage.create_bucket("documents", options={"public": False})
-```
-
-**Database table** — run `supabase_migration.sql` in the [Supabase SQL Editor](https://supabase.com/dashboard/project/_/sql/new):
-```bash
-# The file is at the project root
-cat supabase_migration.sql
-```
-
-### 4. Run the application
-
-**Option A — Docker (one command, both services):**
-```bash
-docker compose up --build
-```
-
-**Option B — manually:**
-
-**Terminal 1 — FastAPI backend:**
 ```bash
 python -m uvicorn src.api.main:app --reload --port 8000
 ```
 
-**Terminal 2 — Streamlit frontend:**
-```bash
-streamlit run frontend/app.py
-```
+### 2. Seed a regulation
 
-Open **http://localhost:8501** in your browser. `Config`'s fail-fast validation means the app
-refuses to boot if a required secret (`GROQ_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_*`) is
-missing or blank — check the startup error if it doesn't come up.
-
----
-
-## API Reference
-
-Base URL: `http://localhost:8000`
-
-### Auth
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/auth/signup` | Create account (`email`, `password`) |
-| `POST` | `/api/auth/login` | Sign in → returns `access_token` + `refresh_token` |
-| `POST` | `/api/auth/refresh` | Exchange a `refresh_token` for a fresh token pair (renew an expiring session) |
-| `POST` | `/api/auth/logout` | Invalidate session |
-| `GET` | `/api/auth/me` | Get current user info |
-
-### Documents
-
-> All endpoints require `Authorization: Bearer <token>`
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/documents/upload` | Accept a file (multipart) → `202 {job_id, status, filename}`; ingestion (Storage + Pinecone) runs in the background |
-| `GET` | `/api/documents/upload-status/{job_id}` | Poll a background ingestion job → `{status, chunks_ingested, error}` |
-| `GET` | `/api/documents/` | List user's uploaded documents |
-| `DELETE` | `/api/documents/{filename}` | Delete from Storage + Pinecone |
-
-### Chat
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/chat/query` | Blocking Q&A → `{answer, sources, ...}` |
-| `POST` | `/api/chat/query/stream` | Streaming Q&A (SSE) → token-by-token, plus a `meta` event with a LangSmith `run_id` when tracing is on |
-| `POST` | `/api/chat/feedback` | Record a 👍/👎 (`{run_id, score}`) as a LangSmith feedback score; no-op when tracing is off |
-
-### Conversations (persistent chat history)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/conversations` | Start a new conversation → `{id, title}` |
-| `GET` | `/api/conversations` | List the user's conversations (most-recent first) |
-| `GET` | `/api/conversations/{id}/messages` | Load a conversation's messages |
-| `POST` | `/api/conversations/{id}/messages` | Append a message (`{role, content, sources?, run_id?}`) |
-| `DELETE` | `/api/conversations/{id}` | Delete a conversation (messages cascade) |
-
-> **Evaluation isn't a live endpoint.** It's an offline harness (`scripts/run_eval.py`) over a
-> versioned gold set (`data/eval/`) — retrieval metrics (Hit@k/Recall@k/MRR) + RAGAS generation
-> metrics + a refusal-rate check, with a CI gate that fails the build on a regression against the
-> committed baseline. Run it on demand: `python -m scripts.run_eval`.
-
-#### Example: Query
+A check needs something to check against. Point the seed script at an RBI circular PDF:
 
 ```bash
-curl -X POST http://localhost:8000/api/chat/query \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "What are the key findings?",
-    "chat_history": [],
-    "filename_filter": null
-  }'
+python -m scripts.seed_regulation --pdf data/compliance/rbi_kyc_requirements.pdf --name "RBI KYC (demo)"
 ```
 
-**Response:**
-```json
-{
-  "answer": "The key findings are... [Source: report.pdf, Page: 3]",
-  "sources": [
-    {
-      "source_id": 1,
-      "filename": "report.pdf",
-      "page": 3,
-      "chunk_type": "text",
-      "chunk_id": "report.pdf::a1b2c3...",
-      "has_visual": false
-    }
-  ],
-  "rewritten_query": "What are the key findings?",
-  "num_sources_used": 3,
-  "namespace": "eb332ef7-..."
-}
+This parses → extracts atomic requirements (clause-aware) → ingests into the shared `regulations` namespace → caches the requirement list. A synthetic fixture ships for a fast demo; a real RBI Master Direction chapter works the same way.
+
+### 3. Frontend
+
+```bash
+cd frontend-next
+npm install
+npm run dev          # http://localhost:3000
 ```
-> The streaming endpoint's `sources` event additionally includes a `content` snippet per source
-> (a short preview of the chunk text) — the blocking endpoint above does not.
 
-Interactive docs: **http://localhost:8000/docs**
+Open **http://localhost:3000** — **Demo** mode replays a real cited gap table instantly (no login). **Live** mode: sign in → upload your policy → pick a regulation → **Run check**.
 
 ---
 
-## Configuration Reference
+## API reference
 
-All settings live in `src/components/config.py` (`pydantic-settings`) and are overridable via
-`.env` — the five required secrets (`GROQ_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`,
-`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) fail fast at startup if missing or blank.
+Base URL `http://localhost:8000` · interactive docs at `/docs`. All non-auth endpoints require `Authorization: Bearer <token>`.
 
-**Core**
+### Compliance
 
-| Setting | Default | Description |
+| Method | Endpoint | Description |
 |---|---|---|
-| `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-mpnet-base-v2` | Local embedding model (768-dim, CPU) |
-| `LLM_MODEL_NAME` | `llama-3.1-8b-instant` | Groq-hosted chat model |
-| `CHUNK_SIZE_TOKENS` | `512` | Max tokens per chunk |
-| `CHUNK_OVERLAP_TOKENS` | `64` | Token overlap between chunks |
-| `TOP_K` | `10` | Candidate pool retrieved per query (eval-tuned) |
-| `SIMILARITY_THRESHOLD` | `0.50` | Min cosine score to keep |
-| `LLM_TEMPERATURE` | `0.1` | LLM creativity (lower = more factual) |
-| `RERANKER_TOP_K` | `5` | Chunks kept after Cohere rerank (eval-tuned: hit@k 0.875→1.0) |
-| `EMBEDDING_BATCH_SIZE` | `100` | Vectors per Pinecone upsert batch (native-hybrid upsert path) |
-| `MAX_UPLOAD_SIZE_BYTES` | `50MB` | Upload size cap, enforced before buffering the file |
-| `API_PORT` | `8000` | FastAPI server port |
+| `GET` | `/api/compliance/regulations` | List regulations available to check against |
+| `POST` | `/api/compliance/check` | Run a gap check `{regulation_id}` → **SSE**: `summary_init` → one `row` per requirement (as judged) → `summary_final`; persists the cited table |
+| `POST` | `/api/compliance/recheck` | Re-check a prior check `{check_id}` against the regulation's **current** version — re-judges only added/changed requirements, carries the rest forward, streams a `delta` |
+| `GET` | `/api/compliance/checks` | List the user's past checks (summary counts) |
+| `GET` | `/api/compliance/checks/{id}` | Fetch a past check's full cited gap table (instant, no re-run) |
 
-**Feature flags / optional services** (all need the matching key/URL to actually activate)
+### Auth · Documents · Chat · Conversations
 
-| Setting | Default | Description |
-|---|---|---|
-| `USE_HYBRID_SEARCH` | `false` | Pinecone native sparse+dense fusion — needs a `dotproduct` index + re-ingest |
-| `USE_RERANKING` | `true` | Cohere Rerank API — needs `COHERE_API_KEY`, else falls back to retrieval order |
-| `REDIS_URL` | unset | Exact-match query cache — unset disables it (fail-open no-op) |
-| `USE_SEMANTIC_CACHE` | `true` | Serve a near-identical past question (cosine on its embedding); needs `REDIS_URL` |
-| `LANGSMITH_TRACING` | `false` | Trace every chain to LangSmith — needs `LANGSMITH_API_KEY` |
-| `USE_IMAGE_ANSWERING` | `false` | Render PDF pages with figures/tables and answer over the page image — needs a vision-capable LLM (Groq Llama-3.1-8B is text-only) |
-| `USE_CITATION_VERIFICATION` | `true` | Flag whether each `[Source: ...]` citation names a real retrieved file |
+| Group | Endpoints |
+|---|---|
+| **Auth** | `POST /api/auth/{signup,login,refresh,logout}` · `GET /api/auth/me` |
+| **Documents** | `POST /api/documents/upload` (202 + background ingest) · `GET /api/documents/upload-status/{job_id}` · `GET /api/documents/` · `DELETE /api/documents/{filename}` |
+| **Chat** | `POST /api/chat/query` · `POST /api/chat/query/stream` (SSE) · `POST /api/chat/feedback` |
+| **Conversations** | `POST`/`GET /api/conversations` · `GET`/`POST /api/conversations/{id}/messages` · `DELETE /api/conversations/{id}` |
 
 ---
 
-## How It Works
+## Evaluation
 
-### Ingestion
+The moat. Two offline, CI-gated eval suites over versioned gold sets — no live endpoint, so a bad number blocks the build instead of shipping.
 
-1. Upload is validated (filename, extension, size cap) and accepted — `202` + a job id are
-   returned immediately; everything below runs in the background
-2. File is saved to Supabase Storage
-3. PyMuPDF (PDF) / python-docx (DOCX) extracts per-page text + embedded images; pages with
-   figures/tables are also rendered to an image (for multimodal answers later)
-4. Text is split into ~512-token chunks (64-token overlap) via `tiktoken` — predictable context
-   size and cost, independent of the source format
-5. Each chunk becomes a LangChain `Document` with metadata (`filename`, `page_number`, `chunk_type`)
-6. SHA-256 deduplication removes identical chunks
-7. A local sentence-transformers model embeds each chunk → 768-dim vector (+ sparse, if native hybrid is on)
-8. Vectors are upserted to Pinecone under the user's namespace; job status flips to `completed`,
-   polled via `GET /api/documents/upload-status/{job_id}`
+**Compliance gap-analysis** — `scripts/run_compliance_eval.py`, over a labeled `(requirement, policy excerpt) → status` gold set covering all four statuses:
 
-### Querying
+| Metric | Score |
+|---|---|
+| Accuracy | **0.92** |
+| Macro-F1 (over Covered/Partial/Gap/Conflict) | **0.91** |
+| Evidence faithfulness | grounded-quote rate on clause-asserting verdicts |
 
-1. An exact or semantically-near-identical past question is served straight from Redis, if caching
-   is on (skips everything below)
-2. If chat history exists → LLM rewrites the query to be standalone
-3. The query is embedded once and searched in Pinecone (dense cosine, or native hybrid fusion)
-4. Cohere re-ranks the candidates down to the most relevant few
-5. Retrieved chunks are formatted with source labels (plus the page's rendered image, for chunks
-   with figures/tables)
-6. LLM generates a grounded answer with inline citations, verified against the real sources
-7. Response streams token-by-token via SSE; the answer is cached for next time
+> The eval found a real bug and proved the fix: the judge was softening a 3-year-vs-5-year retention **Conflict** into "Partial" (under-stating a violation — the worst error direction in compliance). Sharpening the Conflict definition took macro-F1 `0.63 → 0.91` with no Partial regression, and a committed baseline now guards it in CI.
 
----
-
-## Evaluation Results
-
-Measured with the offline harness ([`scripts/run_eval.py`](scripts/run_eval.py)) against a versioned
-gold set of **41 questions across 4 documents** (an ML research paper + 3 HR-policy handbooks from
-different organisations — testing generalisation, not a single memorised doc). Retrieval is scored
-page-level (label-robust to re-chunking); generation is scored by RAGAS. Every gold answer's page
-label is auto-verified against the source. Reproduce with `python -m scripts.run_eval`.
+**RAG retrieval + generation** — `scripts/run_eval.py`, over 41 questions across 4 documents (page-level retrieval, RAGAS generation):
 
 | Stage | Metric | Score |
 |---|---|---|
-| **Retrieval** | Hit@k | **0.97** |
-| | Recall@k | **0.96** |
-| | MRR | **0.92** |
-| **Generation** (RAGAS) | Faithfulness (answer grounded in context) | **0.80** |
-| | Answer relevancy | **0.74** |
-| | Context precision | **0.86** |
-| | Context recall | **0.89** |
-| **Safety** | Refusal rate on unanswerable questions | **1.00** |
+| Retrieval | Hit@k / Recall@k / MRR | **0.97 / 0.96 / 0.92** |
+| Generation (RAGAS) | Faithfulness / Answer relevancy | **0.80 / 0.74** |
+| Generation (RAGAS) | Context precision / recall | **0.86 / 0.89** |
+| Safety | Refusal rate on unanswerable questions | **1.00** |
 
-Retrieval uses local `all-mpnet-base-v2` embeddings + Pinecone native hybrid + Cohere rerank
-(`TOP_K=10`, `RERANKER_TOP_K=5`, eval-tuned). A committed baseline
-([`data/eval/baseline.committed.json`](data/eval/baseline.committed.json)) arms a CI regression
-gate (`run_eval --check`) that fails if any metric drops past tolerance.
+Health: **250+ tests** (`pytest`), `ruff` + `pyflakes` clean, on every push.
 
 ---
 
-## CI / CD
+## Configuration
 
-GitHub Actions runs on every push and pull request:
+Everything lives in `src/components/config.py` (`pydantic-settings`), env-overridable. The five required secrets (`GROQ_API_KEY`, `PINECONE_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) **fail fast at startup** if missing or blank.
+
+| Setting | Default | Description |
+|---|---|---|
+| `JUDGE_PROVIDER` / `JUDGE_MODEL` | `cerebras` / `gpt-oss-120b` | The compliance judge; swap to Groq/OpenRouter/a paid model with no code change |
+| `CEREBRAS_API_KEY` | unset | The judge's key (optional secret — the app runs without it; compliance endpoints return a clear 503) |
+| `USE_CLAUSE_AWARE_CHUNKING` | `true` | Clause/section-aware chunking for legal text (regulations) |
+| `LLM_MODEL_NAME` | `llama-3.1-8b-instant` | Groq chat/rewrite model |
+| `EMBEDDING_MODEL_NAME` | `all-mpnet-base-v2` | Local embedding model (768-dim, CPU) |
+| `TOP_K` / `RERANKER_TOP_K` | `10` / `5` | Retrieval pool / kept-after-rerank (eval-tuned) |
+| `USE_HYBRID_SEARCH` | `false` | Pinecone native sparse+dense — needs a `dotproduct` index + re-ingest |
+| `USE_RERANKING` | `true` | Cohere Rerank — needs `COHERE_API_KEY`, else falls back to retrieval order |
+| `REDIS_URL` | unset | Enables the query cache **and** shared (multi-worker) rate limiting |
+| `LANGSMITH_TRACING` | `false` | LangSmith tracing + feedback — needs `LANGSMITH_API_KEY` |
+
+---
+
+## Deployment
+
+`docker compose up --build` runs the full stack (FastAPI `api` on `:8000` + Next.js `frontend` on `:3000`). The Next app builds as a self-contained `output: "standalone"` image. See **[DEPLOY.md](DEPLOY.md)** for the build-time API-URL gotcha, CORS, single-worker vs. Redis-multi-worker scaling, and free-tier caveats (local mpnet needs ~1 GB RAM; a live check is slow on the free judge tier — demo mode is instant).
+
+---
+
+## Project structure
 
 ```
-push / PR
-    │
-    ├── lint-and-typecheck   ── ruff + pyflakes
-    │
-    ├── test                 ── syntax check + pytest (all with mocked env vars)
-    │
-    └── api-import-check     ── verifies FastAPI app imports cleanly
+├── src/
+│   ├── components/
+│   │   ├── compliance.py     # the gap engine: extract_requirements · judge · verify · diff · run_check
+│   │   ├── judge.py          # build_judge_llm — provider-agnostic (Cerebras/Groq/OpenRouter)
+│   │   ├── ingestion.py      # parsing + token & clause/section-aware chunking
+│   │   ├── retrieval.py      # hybrid search + Cohere rerank
+│   │   ├── generation.py     # query rewrite + generation + SSE + citation verification
+│   │   ├── evalution.py      # compliance metrics + RAGAS + retrieval metrics
+│   │   ├── database.py       # Supabase: auth, storage, regulations, checks, docs
+│   │   ├── cache.py · config.py · embeddings.py · sparse.py
+│   ├── pipeline/pipeline.py  # end-to-end RAG orchestrator (ingest, retrieve, generate)
+│   └── api/
+│       ├── main.py           # FastAPI app; registers auth/documents/chat/conversations/compliance
+│       └── router/compliance.py  # /api/compliance/* (check, recheck, regulations, checks)
+├── frontend-next/            # Next.js 16 UI — CheckHero · GapRow · Library · Ask · ChecksHistory
+├── frontend/                 # legacy Streamlit UI (kept until parity, then retired)
+├── scripts/
+│   ├── seed_regulation.py    # admin: parse → extract → ingest → cache a regulation
+│   ├── run_compliance_eval.py# gap-analysis accuracy / macro-F1 / evidence faithfulness
+│   └── run_eval.py           # RAG retrieval + RAGAS eval (CI gate)
+├── data/eval/                # gold sets + committed baselines (compliance + RAG)
+├── supabase_migration.sql · Dockerfile · docker-compose.yml · DEPLOY.md
+└── BUGFIXES.md               # a log of every fix: root cause, the fix, and a plain-English explanation
 ```
 
 ---
