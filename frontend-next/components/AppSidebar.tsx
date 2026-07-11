@@ -15,7 +15,8 @@ function Icon({ d }: { d: string }) {
 
 const NAV = [
   { href: "/check", label: "Gap check", d: "M4 5h9M4 10h9M4 15h5M14.5 13.5l1.5 1.5 3-3.5" },
-  { href: "/library", label: "Library", d: "M4 4h5v12H4zM11 4h5v12h-5zM4 16h12" },
+  { href: "/policies", label: "Policies", d: "M6 3h6l3 3v11H6zM12 3v3h3" },
+  { href: "/regulations", label: "Regulations", d: "M4 4h5v12H4zM11 4h5v12h-5zM4 16h12" },
   { href: "/ask", label: "Ask", d: "M4 5h12v8H9l-3 2v-2H4z" },
 ];
 
