@@ -42,7 +42,7 @@ export default function GapRowCard({ row }: { row: Row }) {
     <div className={`${cls} glass overflow-hidden rounded-2xl`}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-white/[0.03]"
+        className="flex w-full items-center gap-3 p-4 text-left transition-colors hover:bg-[var(--hover)]"
         aria-expanded={open}
       >
         <span className="st-bar h-10 w-1 shrink-0 rounded-full" />
@@ -57,7 +57,7 @@ export default function GapRowCard({ row }: { row: Row }) {
           </p>
         </div>
         {changeChip && (
-          <span className="hidden shrink-0 rounded-full border border-indigo-400/30 bg-indigo-400/10 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-indigo-200 sm:inline">
+          <span className="hidden shrink-0 rounded-full border border-[var(--accent-soft-border)] bg-[var(--accent-soft-bg)] px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-[var(--accent-soft-text)] sm:inline">
             {changeChip}
           </span>
         )}
@@ -69,7 +69,7 @@ export default function GapRowCard({ row }: { row: Row }) {
       </button>
 
       {open && (
-        <div className="border-t border-white/10 px-4 pb-4 pt-4">
+        <div className="border-t border-[var(--line)] px-4 pb-4 pt-4">
           <div className="grid gap-3 md:grid-cols-2">
             {/* Your policy clause */}
             <div className="glass-soft rounded-xl p-3.5">
@@ -89,7 +89,7 @@ export default function GapRowCard({ row }: { row: Row }) {
                     )}
                     {verified && (
                       <span
-                        className="inline-flex items-center gap-1 rounded-full border border-white/12 bg-white/5 px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]"
+                        className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--surface-soft)] px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]"
                         title="The cited quote was matched to this exact clause in your policy."
                       >
                         <svg viewBox="0 0 20 20" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.2">

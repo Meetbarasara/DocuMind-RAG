@@ -1,31 +1,44 @@
 @import "tailwindcss";
 
 :root {
-  --fg: #e6ebf5;
-  --muted: #93a1b8;
-  --accent: 99 102 241;      /* indigo-500 */
+  /* ── Light + orange theme ───────────────────────────────────────────────
+     Everything is driven from these tokens so the whole palette swaps here.  */
+  --fg: #1c1917;                       /* stone-900 — near-black warm ink */
+  --muted: #78716c;                    /* stone-500 */
+  --accent: 234 88 12;                 /* orange-600 — deep, red-leaning, so it
+                                          stays distinct from the amber "Partial" */
+
+  --surface: #ffffff;                  /* raised card */
+  --surface-soft: #faf8f5;             /* inset / secondary surface */
+  --line: rgba(28, 25, 23, 0.10);      /* hairline border */
+  --line-strong: rgba(28, 25, 23, 0.24);
+  --hover: rgba(28, 25, 23, 0.045);    /* subtle hover / fill */
+  --active: rgba(234, 88, 12, 0.10);   /* active tab = faint orange tint */
+  --placeholder: rgba(28, 25, 23, 0.35);
+
+  --accent-soft-bg: rgba(234, 88, 12, 0.10);   /* "New/Changed" chip */
+  --accent-soft-border: rgba(234, 88, 12, 0.30);
+  --accent-soft-text: #9a3412;         /* orange-800 — reads on the light tint */
+
+  --danger: #e11d48;                   /* rose-600 — delete affordance */
 }
 
 @theme inline {
-  --color-background: #0b1120;
+  --color-background: #faf7f2;
   --color-foreground: var(--fg);
 }
 
 html {
-  /* Dark base behind everything. The body gradient sits on top, but content
-     taller than one viewport used to overflow onto the browser's white default
-     because body was capped at height:100%. Now body grows with its content and
-     this solid color covers the viewport + any overscroll. */
-  background-color: #0b1120;
+  background-color: #faf7f2;
 }
 
 body {
   color: var(--fg);
-  /* Deep slate canvas with two soft indigo/cyan light sources (the plan's hero) */
+  /* Soft warm off-white canvas with two faint orange light sources. */
   background:
-    radial-gradient(1100px 600px at 12% -12%, rgba(99, 102, 241, 0.22), transparent 60%),
-    radial-gradient(900px 520px at 105% 0%, rgba(56, 189, 248, 0.12), transparent 55%),
-    linear-gradient(180deg, #0b1120 0%, #0b1120 45%, #090d18 100%);
+    radial-gradient(1100px 600px at 12% -12%, rgba(234, 88, 12, 0.06), transparent 60%),
+    radial-gradient(900px 520px at 106% 0%, rgba(234, 88, 12, 0.04), transparent 55%),
+    linear-gradient(180deg, #ffffff 0%, #faf7f2 60%, #f4efe8 100%);
   background-repeat: no-repeat;
   min-height: 100vh;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial,
@@ -33,53 +46,43 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Glass surfaces — cards/panels only, never behind small body text (WCAG AA) */
+/* Cards — flat + light (glassmorphism disappears on a light canvas). Class names
+   kept (glass / glass-soft) so components retheme with no markup change. */
 .glass {
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 10px 40px rgba(2, 6, 23, 0.5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgba(28, 25, 23, 0.04), 0 10px 30px rgba(28, 25, 23, 0.06);
 }
 .glass-soft {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
 }
 .transition-glass {
   transition: background-color 0.18s ease, border-color 0.18s ease,
     transform 0.18s ease;
 }
 
-/* Status accent tokens: one class sets --c (an "r g b" triple) reused by chips,
-   the row's left bar, and the summary cards. Covered/Partial/Gap/Conflict/Review. */
-.st-covered {
-  --c: 16 185 129;
-}
-.st-partial {
-  --c: 245 158 11;
-}
-.st-gap {
-  --c: 244 63 94;
-}
-.st-conflict {
-  --c: 167 139 250;
-}
-.st-review {
-  --c: 148 163 184;
-}
+/* Status tokens: --c = the vivid hue (left bar, tint fill); --c-ink = a dark shade
+   of the same hue used for text, so chips clear WCAG AA on the light tint. */
+.st-covered { --c: 16 185 129;  --c-ink: 4 120 87; }    /* emerald */
+.st-partial { --c: 245 158 11;  --c-ink: 146 64 14; }   /* amber → dark-amber ink */
+.st-gap     { --c: 244 63 94;   --c-ink: 159 18 57; }   /* rose */
+.st-conflict{ --c: 139 92 246;  --c-ink: 91 33 182; }   /* violet */
+.st-review  { --c: 148 163 184; --c-ink: 71 85 105; }   /* slate */
+
 .st-chip {
-  color: rgb(var(--c));
+  color: rgb(var(--c-ink));
   background: rgba(var(--c) / 0.14);
-  border: 1px solid rgba(var(--c) / 0.4);
+  border: 1px solid rgba(var(--c) / 0.32);
 }
 .st-fg {
-  color: rgb(var(--c));
+  color: rgb(var(--c-ink));
 }
 .st-bar {
   background: rgb(var(--c));
 }
 .st-ring {
-  box-shadow: inset 0 0 0 1px rgba(var(--c) / 0.35);
+  box-shadow: inset 0 0 0 1px rgba(var(--c) / 0.4);
 }
 
 .accent-btn {
@@ -88,12 +91,12 @@ body {
   transition: filter 0.15s ease, transform 0.05s ease;
 }
 .accent-btn:hover:not(:disabled) {
-  filter: brightness(1.12);
+  filter: brightness(0.94);
 }
 .accent-btn:active:not(:disabled) {
   transform: translateY(1px);
 }
 .accent-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: not-allowed;
 }

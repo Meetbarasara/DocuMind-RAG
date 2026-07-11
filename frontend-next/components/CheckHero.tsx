@@ -257,10 +257,10 @@ export default function CheckHero({
                   <select
                     value={regId}
                     onChange={(e) => setRegId(e.target.value)}
-                    className="glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none focus:border-white/25 sm:w-80"
+                    className="glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none focus:border-[var(--line-strong)] sm:w-80"
                   >
                     {regulations.map((r) => (
-                      <option key={r.id} value={r.id} className="bg-[#0b1120]">
+                      <option key={r.id} value={r.id} className="bg-white text-[var(--fg)]">
                         {r.name}
                       </option>
                     ))}
@@ -326,7 +326,7 @@ export default function CheckHero({
                 : `${checked} requirements`}
             </span>
           </div>
-          <div className="h-1 overflow-hidden rounded-full bg-white/10">
+          <div className="h-1 overflow-hidden rounded-full bg-[var(--line)]">
             <div
               className="h-full rounded-full bg-[rgb(var(--accent))] transition-[width] duration-300"
               style={{ width: `${phase === "done" ? 100 : pct}%` }}
@@ -395,7 +395,7 @@ function ModeToggle({
           onClick={() => setMode(m)}
           className={`rounded-lg px-3 py-1.5 font-medium capitalize transition-colors disabled:opacity-50 ${
             mode === m
-              ? "bg-white/12 text-[var(--fg)]"
+              ? "bg-[var(--active)] text-[var(--fg)]"
               : "text-[var(--muted)] hover:text-[var(--fg)]"
           }`}
         >
@@ -433,7 +433,7 @@ function DeltaBanner({ delta }: { delta: DeltaCounts }) {
 function EmptyState() {
   return (
     <div className="glass rounded-3xl px-6 py-16 text-center">
-      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-500/15 text-2xl">
+      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--accent-soft-bg)] text-2xl">
         📋
       </div>
       <h3 className="text-lg font-semibold text-[var(--fg)]">

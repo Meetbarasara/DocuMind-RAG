@@ -88,7 +88,7 @@ export default function AskPanel({
           }}
           rows={2}
           placeholder="e.g. How long do we retain KYC records?"
-          className="glass-soft w-full resize-none rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-white/30 focus:border-white/25"
+          className="glass-soft w-full resize-none rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-[var(--placeholder)] focus:border-[var(--line-strong)]"
         />
         <div className="flex items-center justify-between">
           <span className="text-xs text-[var(--muted)]">
@@ -120,7 +120,7 @@ export default function AskPanel({
             )}
           </div>
           {sources.length > 0 && (
-            <div className="border-t border-white/10 pt-3">
+            <div className="border-t border-[var(--line)] pt-3">
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
                 Sources
               </div>

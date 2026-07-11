@@ -66,7 +66,7 @@ export default function PolicyUpload({
           type="button"
           disabled={busy}
           onClick={() => inputRef.current?.click()}
-          className="glass-soft rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] transition-colors hover:bg-white/[0.06] disabled:opacity-50"
+          className="glass-soft rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
         >
           {busy ? "Uploading…" : "Upload policy"}
         </button>
@@ -88,7 +88,7 @@ export default function PolicyUpload({
                   disabled={deleting === d.filename}
                   title={`Delete ${d.filename}`}
                   aria-label={`Delete ${d.filename}`}
-                  className="shrink-0 rounded-md p-1 text-[var(--muted)] transition-colors hover:bg-white/[0.06] hover:text-rose-300 disabled:opacity-50"
+                  className="shrink-0 rounded-md p-1 text-[var(--muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--danger)] disabled:opacity-50"
                 >
                   {deleting === d.filename ? "…" : <TrashIcon />}
                 </button>

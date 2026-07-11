@@ -37,7 +37,7 @@ export default function SignIn({
   }
 
   const input =
-    "glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-white/30 focus:border-white/25";
+    "glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-[var(--placeholder)] focus:border-[var(--line-strong)]";
 
   return (
     <form onSubmit={submit} className="max-w-sm space-y-3">
@@ -53,7 +53,7 @@ export default function SignIn({
             }}
             className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
               mode === m
-                ? "bg-white/12 text-[var(--fg)]"
+                ? "bg-[var(--active)] text-[var(--fg)]"
                 : "text-[var(--muted)] hover:text-[var(--fg)]"
             }`}
           >

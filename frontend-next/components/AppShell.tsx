@@ -48,7 +48,7 @@ export default function AppShell() {
   return (
     <>
       <header className="mb-6">
-        <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/5 px-3 py-1 text-xs font-medium text-[var(--muted)]">
+        <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-1 text-xs font-medium text-[var(--muted)]">
           <span className="st-conflict st-bar h-1.5 w-1.5 rounded-full" />
           RBI KYC · India
         </div>
@@ -73,7 +73,7 @@ export default function AppShell() {
         <LibraryScreen session={session} onSignedIn={onSignedIn} />
       )}
 
-      <footer className="mt-10 border-t border-white/10 pt-5 text-xs text-[var(--muted)]">
+      <footer className="mt-10 border-t border-[var(--line)] pt-5 text-xs text-[var(--muted)]">
         Assisted review — not legal advice. Every finding is cited to a clause
         for a human to verify.
       </footer>
@@ -95,7 +95,7 @@ function Nav({ view, setView }: { view: View; setView: (v: View) => void }) {
           onClick={() => setView(v)}
           className={`rounded-lg px-3.5 py-1.5 font-medium transition-colors ${
             view === v
-              ? "bg-white/12 text-[var(--fg)]"
+              ? "bg-[var(--active)] text-[var(--fg)]"
               : "text-[var(--muted)] hover:text-[var(--fg)]"
           }`}
         >

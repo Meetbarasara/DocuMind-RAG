@@ -138,7 +138,7 @@ export default function LibraryScreen({
                       {r.name}
                     </span>
                     {r.regulator && (
-                      <span className="shrink-0 rounded-full border border-white/12 bg-white/5 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]">
+                      <span className="shrink-0 rounded-full border border-[var(--line)] bg-[var(--surface-soft)] px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]">
                         {r.regulator}
                       </span>
                     )}

@@ -46,14 +46,14 @@ export default function ChecksHistory({
             <div
               style={
                 activeId === c.id
-                  ? { boxShadow: "inset 0 0 0 1px rgba(99,102,241,0.55)" }
+                  ? { boxShadow: "inset 0 0 0 1px rgb(var(--accent) / 0.55)" }
                   : undefined
               }
               className="glass-soft flex items-center gap-1 rounded-xl"
             >
               <button
                 onClick={() => onOpen(c.id)}
-                className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-l-xl px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.06]"
+                className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-l-xl px-3.5 py-2.5 text-left transition-colors hover:bg-[var(--hover)]"
               >
                 <div className="min-w-0">
                   <div className="truncate text-sm text-[var(--fg)]">
@@ -81,7 +81,7 @@ export default function ChecksHistory({
                 onClick={() => onRecheck(c.id)}
                 title="Re-check against the current version of this regulation — only what changed is re-judged."
                 aria-label="Re-check against update"
-                className="mr-1 shrink-0 rounded-lg p-2 text-[var(--muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--fg)]"
+                className="mr-1 shrink-0 rounded-lg p-2 text-[var(--muted)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--fg)]"
               >
                 <RecheckIcon />
               </button>
