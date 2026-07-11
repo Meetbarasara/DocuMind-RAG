@@ -75,6 +75,19 @@ Original query: {query}"""
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _fmt_page(value) -> str:
+    """Render a page number for a citation. Pinecone returns numeric metadata as a
+    float (page 2 -> 2.0), so normalise a whole number to a plain int ('2', not
+    '2.0'); no page -> 'N/A'."""
+    if value is None:
+        return "N/A"
+    try:
+        f = float(value)
+        return str(int(f)) if f.is_integer() else str(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 class AnswerGeneration:
     """Generate grounded, cited answers from retrieved documents using an LLM.
 
@@ -125,7 +138,7 @@ class AnswerGeneration:
             # Label each chunk so the LLM can cite it
             source_label = (
                 f"[Source{i}: {meta.get('filename', 'unknown')}, "
-                f"Page: {meta.get('page_number', 'N/A')}, "
+                f"Page: {_fmt_page(meta.get('page_number'))}, "
                 f"Type: {meta.get('chunk_type', 'text')}]"
             )
             context_parts.append(f"{source_label}\n{doc.page_content}\n")
@@ -142,7 +155,7 @@ class AnswerGeneration:
             sources.append({
                 "source_id": i,
                 "filename": meta.get("filename"),
-                "page": meta.get("page_number") or "N/A",
+                "page": _fmt_page(meta.get("page_number")),
                 "chunk_type": meta.get("chunk_type"),
                 "chunk_id": meta.get("chunk_id"),
                 "has_visual": bool(meta.get("has_visual")),  # B-hybrid: a page snapshot exists

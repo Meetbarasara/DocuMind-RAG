@@ -12,7 +12,26 @@ lookup set then contains the *string* "none" (str(None).lower()), not
 
 from langchain_core.documents import Document
 
-from src.components.generation import AnswerGeneration
+from src.components.generation import AnswerGeneration, _fmt_page
+
+
+def test_fmt_page_normalizes_float_and_missing():
+    assert _fmt_page(2.0) == "2"        # Pinecone's hybrid path returns page as a float
+    assert _fmt_page(2) == "2"
+    assert _fmt_page(None) == "N/A"
+    assert _fmt_page("N/A") == "N/A"
+
+
+def test_build_context_normalizes_float_page_to_int():
+    # Pinecone's hybrid retrieval rebuilds metadata with page_number as a float;
+    # the citation must read "p.2", not "2.0", in both the label and the sources.
+    doc = Document(
+        page_content="text",
+        metadata={"filename": "r.pdf", "page_number": 2.0, "chunk_type": "text"},
+    )
+    context, sources = AnswerGeneration._build_context_and_sources([doc])
+    assert sources[0]["page"] == "2"
+    assert "Page: 2," in context and "Page: 2.0" not in context
 
 
 def test_build_context_and_sources_defaults_missing_page_to_na():
