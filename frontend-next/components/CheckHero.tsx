@@ -38,12 +38,16 @@ export default function CheckHero({
   session,
   onSignedIn,
   onSignOut,
+  embedded = false,
 }: {
   session: Session | null;
   onSignedIn: (s: Session) => void;
   onSignOut: () => void;
+  // Rendered inside the app shell: the shell owns auth + the sidebar, so force
+  // Live mode and hide the demo/live toggle + the in-panel "signed in / sign out".
+  embedded?: boolean;
 }) {
-  const [mode, setMode] = useState<Mode>("demo");
+  const [mode, setMode] = useState<Mode>(embedded ? "live" : "demo");
 
   // Live data (session is owned by the app shell and passed in)
   const [regulations, setRegulations] = useState<Regulation[]>([]);
@@ -227,26 +231,30 @@ export default function CheckHero({
   return (
     <div className="space-y-6">
       <div className="glass space-y-4 rounded-3xl p-5 sm:p-6">
-        <div className="flex items-center justify-between gap-3">
-          <ModeToggle mode={mode} setMode={setMode} disabled={phase === "running"} />
-          {mode === "demo" && <RunButton onClick={run} disabled={!canRun} label={label} />}
-        </div>
+        {!embedded && (
+          <div className="flex items-center justify-between gap-3">
+            <ModeToggle mode={mode} setMode={setMode} disabled={phase === "running"} />
+            {mode === "demo" && <RunButton onClick={run} disabled={!canRun} label={label} />}
+          </div>
+        )}
 
         {mode === "demo" ? (
           <DemoBody />
         ) : session ? (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-[var(--muted)]">
-                Signed in as <span className="text-[var(--fg)]">{session.email}</span>
+            {!embedded && (
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-[var(--muted)]">
+                  Signed in as <span className="text-[var(--fg)]">{session.email}</span>
+                </div>
+                <button
+                  onClick={handleSignOut}
+                  className="text-xs text-[var(--muted)] transition-colors hover:text-[var(--fg)]"
+                >
+                  Sign out
+                </button>
               </div>
-              <button
-                onClick={handleSignOut}
-                className="text-xs text-[var(--muted)] transition-colors hover:text-[var(--fg)]"
-              >
-                Sign out
-              </button>
-            </div>
+            )}
             {liveError && <p className="st-gap st-fg text-sm">{liveError}</p>}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
               <div className="min-w-0 flex-1">

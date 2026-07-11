@@ -1,9 +1,7 @@
-import AppShell from "@/components/AppShell";
+import { redirect } from "next/navigation";
 
+// The app entry. Sends you into the gap-check screen; the /(app) guard bounces
+// you to /login if you're not signed in.
 export default function Home() {
-  return (
-    <main className="mx-auto w-full max-w-4xl px-5 py-10 sm:py-16">
-      <AppShell />
-    </main>
-  );
+  redirect("/check");
 }
