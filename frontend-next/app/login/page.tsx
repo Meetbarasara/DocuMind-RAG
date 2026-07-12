@@ -12,7 +12,7 @@ export default function LoginPage() {
 
   // Already signed in → go straight to the app.
   useEffect(() => {
-    if (ready && session) router.replace("/check");
+    if (ready && session) router.replace("/dashboard");
   }, [ready, session, router]);
 
   return (
@@ -30,7 +30,7 @@ export default function LoginPage() {
         <SignIn
           onSignedIn={(s) => {
             signIn(s);
-            router.replace("/check");
+            router.replace("/dashboard");
           }}
         />
       </div>
