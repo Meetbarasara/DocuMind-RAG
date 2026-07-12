@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { listRegulations } from "@/lib/api";
+import { listRegulations, uploadRegulation } from "@/lib/api";
 import { useSession } from "@/components/SessionProvider";
 import type { Regulation } from "@/lib/types";
 
@@ -23,6 +23,13 @@ export default function RegulationsPanel() {
   const [regs, setRegs] = useState<Regulation[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Add-a-regulation form state
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [name, setName] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
   useEffect(() => {
     if (!token) return;
     let alive = true;
@@ -35,15 +42,85 @@ export default function RegulationsPanel() {
     };
   }, [token]);
 
+  async function onAdd(e: React.FormEvent) {
+    e.preventDefault();
+    if (!token || !file || !name.trim()) return;
+    setError(null);
+    setBusy(true);
+    setStatus("uploading…");
+    try {
+      const { requirements } = await uploadRegulation(file, name.trim(), token, {
+        onStatus: (s) => setStatus(s === "processing" ? "extracting requirements…" : s),
+      });
+      setStatus(`added · ${requirements} requirements`);
+      setName("");
+      setFile(null);
+      if (inputRef.current) inputRef.current.value = "";
+      listRegulations(token).then(setRegs).catch(() => {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed.");
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!token) return null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {error && (
         <div className="st-gap glass st-ring rounded-2xl px-4 py-3 text-sm text-[var(--fg)]">
           <span className="st-fg font-semibold">Something went wrong:</span> {error}
         </div>
       )}
+
+      {/* Add a regulation */}
+      <div className="glass space-y-3 rounded-3xl p-5 sm:p-6">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">
+            Add a regulation
+          </h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            Upload an RBI circular (PDF, DOCX or TXT). We extract its requirements so you can check
+            your policy against it — this can take a few minutes on the free tier.
+          </p>
+        </div>
+        <form onSubmit={onAdd} className="space-y-2.5">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="RBI KYC Master Direction (2024 update)"
+            className="glass-soft w-full rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] outline-none placeholder:text-[var(--placeholder)] focus:border-[var(--line-strong)]"
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".pdf,.docx,.txt"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              className="glass-soft max-w-[16rem] truncate rounded-xl px-3.5 py-2.5 text-sm text-[var(--fg)] transition-colors hover:bg-[var(--hover)]"
+            >
+              {file ? file.name : "Choose file"}
+            </button>
+            <button
+              type="submit"
+              disabled={busy || !file || !name.trim()}
+              className="accent-btn rounded-xl px-4 py-2.5 text-sm font-semibold disabled:opacity-50"
+            >
+              {busy ? "Adding…" : "Add regulation"}
+            </button>
+            {status && <span className="text-xs text-[var(--muted)]">{status}</span>}
+          </div>
+        </form>
+      </div>
+
+      {/* Available regulations */}
       <div className="glass space-y-4 rounded-3xl p-5 sm:p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">
@@ -80,7 +157,7 @@ export default function RegulationsPanel() {
           </ul>
         ) : (
           <p className="text-sm italic text-[var(--muted)]">
-            No regulations available yet.
+            No regulations yet — add one above.
           </p>
         )}
         <p className="pt-1 text-xs text-[var(--muted)]">

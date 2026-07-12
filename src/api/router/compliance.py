@@ -13,26 +13,43 @@ The heavy lifting lives in src/components/compliance.py (the engine) and judge.p
 
 import asyncio
 import json
+import uuid
+from dataclasses import asdict
+from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user, get_db, get_pipeline
 from src.api.error_utils import log_and_get_ref
 from src.api.limiter import limiter
+from src.api.router.documents import _read_upload_within_limit, _validate_extension
 from src.components.compliance import (
     Requirement,
     diff_requirements,
+    extract_requirements,
     run_check,
     summarize,
     summarize_rows,
 )
 from src.components.database import SupabaseManager
+from src.components.ingestion import DocumentProcessor
 from src.components.judge import JudgeNotConfigured, build_judge_llm
 from src.logger import get_logger
 from src.pipeline.pipeline import RAGPipeline
+from src.utils import sanitize_filename
 
 logger = get_logger(__name__)
 
@@ -157,6 +174,128 @@ async def list_regulations(
     """List regulations available to check against (shared reference data)."""
     regs = await asyncio.to_thread(db.list_regulations)
     return {"regulations": regs}
+
+
+# ── User-uploaded regulations (background extraction) ──────────────────────────
+#
+# A user can add a regulation (e.g. a new RBI circular) themselves; we parse it,
+# extract its requirements (the expensive LLM step) and cache them in the
+# background so it becomes checkable. In-process job dict + status poll, same
+# shape as documents.py upload (single-process app).
+
+_MAX_TRACKED_REG_JOBS = 200
+_reg_jobs: dict = {}
+
+
+def _new_reg_job(name: str, user_id: str) -> str:
+    job_id = uuid.uuid4().hex
+    _reg_jobs[job_id] = {"job_id": job_id, "user_id": user_id, "status": "processing",
+                         "name": name, "regulation_id": None, "requirements": None, "error": None}
+    while len(_reg_jobs) > _MAX_TRACKED_REG_JOBS:
+        _reg_jobs.pop(next(iter(_reg_jobs)))
+    return job_id
+
+
+async def _process_regulation_upload(
+    job_id: str, file_bytes: bytes, safe_filename: str, name: str,
+    regulator: Optional[str], circular_id: Optional[str], config, pipeline, db,
+) -> None:
+    """Parse → extract requirements → ingest → cache one uploaded regulation.
+
+    Blocking work (parsing, embedding/upsert, the Supabase write) is offloaded to
+    threads; the judge extraction is awaited — so this never blocks the event loop
+    even though a big circular takes minutes.
+    """
+    tmp_dir = Path(config.UPLOAD_DIR)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{job_id}_{safe_filename}"
+    tmp_path.write_bytes(file_bytes)
+    clause_aware = getattr(config, "USE_CLAUSE_AWARE_CHUNKING", True)
+    try:
+        judge_llm = build_judge_llm(config)
+        proc = DocumentProcessor(config)
+        parsed = await asyncio.to_thread(proc.process_documents, str(tmp_path))
+        chunks = await asyncio.to_thread(proc.build_langchain_documents, parsed, clause_aware)
+        if not chunks:
+            _reg_jobs[job_id].update(status="failed", error="Could not read any text from the file.")
+            return
+        requirements = await extract_requirements(chunks, judge_llm)
+        if not requirements:
+            _reg_jobs[job_id].update(status="failed",
+                                     error="No requirements could be extracted from this document.")
+            return
+        # Ingest into the shared regulations namespace (checkable + browsable).
+        await asyncio.to_thread(pipeline.ingest_file, str(tmp_path),
+                                namespace="regulations", clause_aware=clause_aware)
+        record = await asyncio.to_thread(
+            db.upsert_regulation, name=name, regulator=regulator, circular_id=circular_id,
+            requirements=[asdict(r) for r in requirements], namespace="regulations",
+        )
+        _reg_jobs[job_id].update(status="completed", regulation_id=(record or {}).get("id"),
+                                 requirements=len(requirements))
+    except Exception as e:
+        ref = log_and_get_ref(logger, "regulation upload processing failed", e)
+        _reg_jobs[job_id].update(status="failed", error=f"Processing failed. (ref: {ref})")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@router.post("/regulations", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("5/minute")
+async def upload_regulation(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    regulator: Optional[str] = Form("RBI"),
+    circular_id: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
+    pipeline: RAGPipeline = Depends(get_pipeline),
+    db: SupabaseManager = Depends(get_db),
+):
+    """Add a regulation (upload a circular PDF). Requirement extraction runs in the
+    background; returns 202 + job_id. Poll /regulations/upload-status/{job_id}."""
+    config = pipeline.config
+    user_id = str(current_user["user"].id)
+
+    try:
+        safe_filename = sanitize_filename(file.filename)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Invalid filename: {file.filename!r}")
+    _validate_extension(safe_filename, config.SUPPORTED_FILE_TYPES)
+
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A regulation name is required.")
+
+    # Extraction needs the judge — fail fast (before creating a job) if it's absent.
+    try:
+        build_judge_llm(config)
+    except JudgeNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"Compliance judge is not configured: {e}")
+
+    file_bytes = await _read_upload_within_limit(file, config.MAX_UPLOAD_SIZE_BYTES)
+    job_id = _new_reg_job(name, user_id)
+    background_tasks.add_task(
+        _process_regulation_upload, job_id, file_bytes, safe_filename, name, regulator, circular_id,
+        config, pipeline, db,
+    )
+    return {"job_id": job_id, "status": "processing", "name": name}
+
+
+@router.get("/regulations/upload-status/{job_id}")
+async def regulation_upload_status(
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Poll a background regulation-extraction job started by POST /regulations."""
+    job = _reg_jobs.get(job_id)
+    user_id = str(current_user["user"].id)
+    if job is None or job["user_id"] != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown job id")
+    return {k: v for k, v in job.items() if k != "user_id"}
 
 
 @router.post("/check")

@@ -215,6 +215,42 @@ export async function deleteDocument(filename: string, token: string): Promise<v
   if (!res.ok) throw new Error(await errorDetail(res, `Delete failed (HTTP ${res.status}).`));
 }
 
+/** Upload a regulation (circular) PDF, then poll the background extraction job.
+ *  Extraction is an LLM step, so this can take minutes on a free judge tier. */
+export async function uploadRegulation(
+  file: File,
+  name: string,
+  token: string,
+  opts?: { regulator?: string; onStatus?: (status: string) => void },
+): Promise<{ regulationId: string; requirements: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("name", name);
+  if (opts?.regulator) form.append("regulator", opts.regulator);
+  const res = await fetch(`${API_BASE}/api/compliance/regulations`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: form,
+  });
+  if (res.status !== 202) throw new Error(await errorDetail(res, `Upload failed (HTTP ${res.status}).`));
+  const { job_id: jobId } = await res.json();
+
+  for (let i = 0; i < 300; i++) {            // ~15 min ceiling (extraction is slow)
+    await sleep(3000);
+    const s = await fetch(`${API_BASE}/api/compliance/regulations/upload-status/${jobId}`, {
+      headers: authHeaders(token),
+    });
+    if (!s.ok) throw new Error(await errorDetail(s, `Status check failed (HTTP ${s.status}).`));
+    const job = await s.json();
+    opts?.onStatus?.(job.status);
+    if (job.status === "completed") {
+      return { regulationId: job.regulation_id, requirements: job.requirements ?? 0 };
+    }
+    if (job.status === "failed") throw new Error(job.error || "Processing failed.");
+  }
+  throw new Error("Processing is taking too long — check back later.");
+}
+
 export async function listChecks(token: string): Promise<CheckSummary[]> {
   const res = await fetch(`${API_BASE}/api/compliance/checks`, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(await errorDetail(res, `Could not load checks (HTTP ${res.status}).`));

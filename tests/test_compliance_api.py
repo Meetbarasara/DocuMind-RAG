@@ -54,10 +54,22 @@ class FakeRM:
 
 class FakePipeline:
     def __init__(self):
-        self.config = SimpleNamespace()   # build_judge_llm is monkeypatched → unused
+        import tempfile
+
+        # build_judge_llm is monkeypatched → unused; the upload fields feed the
+        # regulation-upload endpoint's validation + temp write.
+        self.config = SimpleNamespace(
+            SUPPORTED_FILE_TYPES=("pdf", "docx", "txt"),
+            MAX_UPLOAD_SIZE_BYTES=50 * 1024 * 1024,
+            UPLOAD_DIR=tempfile.gettempdir(),
+            USE_CLAUSE_AWARE_CHUNKING=True,
+        )
 
     def _get_retrieval_manager(self, namespace):
         return FakeRM()
+
+    def ingest_file(self, path, namespace="", clause_aware=False):
+        return 3
 
 
 class FakeDb:
@@ -84,6 +96,13 @@ class FakeDb:
 
     def get_regulation(self, regulation_id):
         return self.regs.get(regulation_id)
+
+    def upsert_regulation(self, name, regulator=None, circular_id=None, requirements=None,
+                          namespace="regulations"):
+        rid = f"reg-{name}"
+        self.regs[rid] = {"id": rid, "name": name, "regulator": regulator,
+                          "requirements": requirements or []}
+        return {"id": rid, "name": name}
 
     def save_compliance_check(self, user_id, policy_label, regulation_id, summary, rows):
         self._n += 1
@@ -280,6 +299,101 @@ async def test_recheck_with_only_removals_needs_no_judge(client, monkeypatch):
 async def test_recheck_unknown_check_returns_404(client):
     resp = await client.post("/api/compliance/recheck", json={"check_id": "nope"})
     assert resp.status_code == 404
+
+
+# ── User regulation upload ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_upload_regulation_extracts_in_background(client, monkeypatch):
+    """A user uploads a circular → 202 + job; the background task parses, extracts
+    requirements (the judge), ingests, caches, and the job flips to completed."""
+    from src.components.compliance import Requirement
+
+    class _FakeProc:
+        def __init__(self, config):
+            pass
+
+        def process_documents(self, path):
+            return {"pages": [(1, "text")], "filename": "rbi.pdf"}
+
+        def build_langchain_documents(self, parsed, clause_aware=False):
+            return ["chunk"]
+
+    async def _fake_extract(chunks, judge):
+        return [Requirement(id="req-1", text="Identify with an OVD"),
+                Requirement(id="req-2", text="Retain records five years")]
+
+    monkeypatch.setattr(compliance_router, "DocumentProcessor", _FakeProc)
+    monkeypatch.setattr(compliance_router, "extract_requirements", _fake_extract)
+    monkeypatch.setattr(compliance_router, "build_judge_llm", lambda config, **kw: FakeJudge())
+
+    resp = await client.post(
+        "/api/compliance/regulations",
+        files={"file": ("rbi.pdf", b"%PDF-1.4 stub", "application/pdf")},
+        data={"name": "My RBI Circular", "regulator": "RBI"},
+    )
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+
+    st = (await client.get(f"/api/compliance/regulations/upload-status/{job_id}")).json()
+    assert st["status"] == "completed", st
+    assert st["requirements"] == 2 and st["regulation_id"]
+
+
+@pytest.mark.asyncio
+async def test_upload_regulation_rejects_bad_extension(client, monkeypatch):
+    monkeypatch.setattr(compliance_router, "build_judge_llm", lambda config, **kw: FakeJudge())
+    resp = await client.post(
+        "/api/compliance/regulations",
+        files={"file": ("reg.exe", b"x", "application/octet-stream")},
+        data={"name": "X"},
+    )
+    assert resp.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_upload_regulation_without_judge_returns_503(client, monkeypatch):
+    def _raise(config, **kw):
+        raise JudgeNotConfigured("CEREBRAS_API_KEY needs to be set")
+    monkeypatch.setattr(compliance_router, "build_judge_llm", _raise)
+    resp = await client.post(
+        "/api/compliance/regulations",
+        files={"file": ("rbi.pdf", b"%PDF-1.4 stub", "application/pdf")},
+        data={"name": "X"},
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_upload_regulation_status_scoped_to_owner(client, monkeypatch):
+    monkeypatch.setattr(compliance_router, "build_judge_llm", lambda config, **kw: FakeJudge())
+
+    class _FakeProc:
+        def __init__(self, config):
+            pass
+
+        def process_documents(self, path):
+            return {"pages": [(1, "t")]}
+
+        def build_langchain_documents(self, parsed, clause_aware=False):
+            return ["chunk"]
+
+    monkeypatch.setattr(compliance_router, "DocumentProcessor", _FakeProc)
+
+    async def _fake_extract(chunks, judge):
+        from src.components.compliance import Requirement
+        return [Requirement(id="r", text="x")]
+
+    monkeypatch.setattr(compliance_router, "extract_requirements", _fake_extract)
+
+    job_id = (await client.post(
+        "/api/compliance/regulations",
+        files={"file": ("rbi.pdf", b"%PDF-1.4 stub", "application/pdf")},
+        data={"name": "A's circular"},
+    )).json()["job_id"]
+
+    _current["id"] = "user-B"  # a different user can't see A's job
+    assert (await client.get(f"/api/compliance/regulations/upload-status/{job_id}")).status_code == 404
 
 
 @pytest.mark.asyncio
