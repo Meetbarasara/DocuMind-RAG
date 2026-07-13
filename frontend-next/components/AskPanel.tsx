@@ -9,6 +9,19 @@ import SignIn from "./SignIn";
 
 type Phase = "idle" | "thinking" | "streaming" | "done" | "error";
 
+// Retrieval runs (and streams its sources) before the model answers, so even a
+// greeting or an unanswerable question comes back with the top-k chunks attached.
+// When the model refuses, those sources are misleading — suppress them. Matches
+// both refusal strings the backend can emit (generation.py / pipeline.py).
+const REFUSAL_PREFIXES = [
+  "i cannot find information about your question",
+  "i couldn't find any relevant information",
+];
+function isRefusal(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  return REFUSAL_PREFIXES.some((r) => a.startsWith(r));
+}
+
 function srcCite(s: ChatSource): string {
   const f = s.filename ?? "source";
   const p = s.page;
@@ -119,7 +132,7 @@ export default function AskPanel({
               ) : null
             )}
           </div>
-          {sources.length > 0 && (
+          {phase === "done" && !isRefusal(answer) && sources.length > 0 && (
             <div className="border-t border-[var(--line)] pt-3">
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
                 Sources
