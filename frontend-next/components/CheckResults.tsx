@@ -56,12 +56,16 @@ export default function CheckResults({
   phase,
   regName,
   delta,
+  token,
 }: {
   rows: Row[];
   total: number;
   phase: Phase;
   regName: string;
   delta?: DeltaCounts | null;
+  // When present (signed-in screens), each Gap/Partial/Conflict row can draft a
+  // suggested fix. Omitted on the public demo, which hides the button.
+  token?: string;
 }) {
   const [filter, setFilter] = useState("All");
   const [query, setQuery] = useState("");
@@ -174,7 +178,9 @@ export default function CheckResults({
 
       <div className="space-y-2.5">
         {visibleRows.length ? (
-          visibleRows.map((row) => <GapRowCard key={row.requirement_id} row={row} />)
+          visibleRows.map((row) => (
+            <GapRowCard key={row.requirement_id} row={row} token={token} />
+          ))
         ) : (
           <p className="glass-soft rounded-xl px-4 py-6 text-center text-sm text-[var(--muted)]">
             No requirements match {filter !== "All" ? `“${filter}”` : "your search"}.

@@ -294,6 +294,49 @@ async def judge_requirement(
     )
 
 
+# ── Remediation suggestion (grounded in the requirement, on demand) ─────────
+
+_SUGGEST_SYS = """You are a compliance analyst helping a fintech close ONE specific gap between its internal KYC policy and an RBI requirement.
+
+You are given the RBI requirement, the current status of the company's policy against it, and the company's current clause (if any).
+
+Write a concise DRAFT policy clause the company can add or amend to satisfy the requirement.
+Rules:
+- Address ONLY this requirement. Do not introduce obligations beyond it.
+- If a current clause is given and it is partial or conflicts (e.g. a shorter retention period than required), REVISE that clause to comply and state the corrected value explicitly.
+- Write it as policy text in the third person ("The company shall ...").
+- Keep it to 2-4 sentences.
+- Do NOT cite RBI section numbers or invent any legal citation.
+- Output only the draft clause — no preamble, no headings, no markdown."""
+
+
+async def suggest_remediation(
+    requirement_text: str,
+    status: str,
+    policy_clause: str,
+    rationale: str,
+    llm,
+) -> str:
+    """Draft a policy clause to close one gap, grounded in the RBI requirement.
+
+    Generative but bounded: the model rewrites/adds a clause to satisfy the given
+    requirement — it never introduces obligations beyond it or invents legal
+    citations. Returned as a draft for human review (the UI labels it so). Unlike
+    the check path (which degrades a bad row to "Needs review"), this raises on
+    LLM failure so the route can surface a clear error to the one waiting user.
+    """
+    parts = [f"RBI requirement:\n{requirement_text.strip()}", f"Current status: {status}"]
+    if policy_clause.strip():
+        parts.append(f"Company's current clause:\n{policy_clause.strip()}")
+    else:
+        parts.append("Company's current clause: (none — the policy is silent on this)")
+    if rationale.strip():
+        parts.append(f"Why it falls short:\n{rationale.strip()}")
+    messages = [SystemMessage(content=_SUGGEST_SYS), HumanMessage(content="\n\n".join(parts))]
+    resp = await llm.ainvoke(messages)
+    return (resp.content or "").strip()
+
+
 # ── Orchestration: run a full check (streamed, bounded concurrency) ─────────
 
 async def run_check(requirements: List[Requirement], retrieval_manager, judge_llm, *,

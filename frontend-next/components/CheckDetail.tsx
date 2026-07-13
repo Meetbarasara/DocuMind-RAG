@@ -107,7 +107,7 @@ export default function CheckDetail({ id }: { id: string }) {
         </div>
       )}
 
-      <CheckResults rows={rows} total={total} phase={phase} regName={regName} delta={delta} />
+      <CheckResults rows={rows} total={total} phase={phase} regName={regName} delta={delta} token={token} />
     </div>
   );
 }

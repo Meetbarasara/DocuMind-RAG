@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { suggestFix } from "@/lib/api";
 import { STATUS_CLASS, type GapRow as Row } from "@/lib/types";
 import StatusPill from "./StatusPill";
 
@@ -19,9 +20,29 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-export default function GapRowCard({ row }: { row: Row }) {
+export default function GapRowCard({ row, token }: { row: Row; token?: string }) {
   const [open, setOpen] = useState(false);
   const cls = STATUS_CLASS[row.status] || "st-review";
+  // A grounded "Suggest a fix" only makes sense where there's something to close,
+  // and only when signed in (the endpoint is authed — the public demo has no token).
+  const actionable =
+    row.status === "Gap" || row.status === "Partial" || row.status === "Conflict";
+  const [suggestion, setSuggestion] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestErr, setSuggestErr] = useState<string | null>(null);
+
+  async function getSuggestion() {
+    if (!token) return;
+    setSuggesting(true);
+    setSuggestErr(null);
+    try {
+      setSuggestion(await suggestFix(row, token));
+    } catch (e) {
+      setSuggestErr(e instanceof Error ? e.message : "Couldn’t draft a suggestion.");
+    } finally {
+      setSuggesting(false);
+    }
+  }
   const rbiCite = `RBI${row.rbi_section ? ` §${row.rbi_section}` : ""}${
     row.rbi_page != null ? ` · p.${row.rbi_page}` : ""
   }`;
@@ -127,6 +148,43 @@ export default function GapRowCard({ row }: { row: Row }) {
             </span>
             <span>— {row.rationale}</span>
           </div>
+
+          {token && actionable && (
+            <div className="mt-3">
+              {!suggestion && (
+                <button
+                  onClick={getSuggestion}
+                  disabled={suggesting}
+                  className="glass-soft rounded-lg px-3 py-1.5 text-xs font-medium text-[var(--fg)] transition-colors hover:bg-[var(--hover)] disabled:opacity-50"
+                >
+                  {suggesting ? "Drafting…" : "Suggest a fix"}
+                </button>
+              )}
+              {suggestErr && <p className="st-gap st-fg mt-2 text-xs">{suggestErr}</p>}
+              {suggestion && (
+                <div className="rounded-xl border border-[var(--accent-soft-border)] bg-[var(--accent-soft-bg)] p-3.5">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-[var(--accent-soft-text)]">
+                      Suggested fix · draft
+                    </span>
+                    <button
+                      onClick={getSuggestion}
+                      disabled={suggesting}
+                      className="text-xs text-[var(--muted)] transition-colors hover:text-[var(--fg)] disabled:opacity-50"
+                    >
+                      {suggesting ? "…" : "Regenerate"}
+                    </button>
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--fg)]">
+                    {suggestion}
+                  </p>
+                  <p className="mt-2 text-[0.7rem] text-[var(--muted)]">
+                    Draft policy language — review with your compliance team before adopting. Not legal advice.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

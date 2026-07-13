@@ -30,6 +30,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from langchain_groq import ChatGroq
 from pydantic import BaseModel
 
 from src.api.dependencies import get_current_user, get_db, get_pipeline
@@ -41,6 +42,7 @@ from src.components.compliance import (
     diff_requirements,
     extract_requirements,
     run_check,
+    suggest_remediation,
     summarize,
     summarize_rows,
 )
@@ -63,6 +65,13 @@ class ComplianceCheckRequest(BaseModel):
 
 class RecheckRequest(BaseModel):
     check_id: str                           # a prior check to re-evaluate against the updated circular
+
+
+class SuggestRequest(BaseModel):
+    requirement: str                        # the RBI requirement text to satisfy
+    status: str = ""                        # current verdict (Gap / Partial / Conflict)
+    policy_clause: str = ""                 # the company's current clause, if any
+    rationale: str = ""                     # why the current policy falls short
 
 
 # ── Serialisation helpers ────────────────────────────────────────────────────
@@ -497,6 +506,47 @@ async def recheck(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/suggest")
+@limiter.limit("20/minute")
+async def suggest(
+    request: Request,
+    payload: SuggestRequest,
+    current_user: dict = Depends(get_current_user),
+    pipeline: RAGPipeline = Depends(get_pipeline),
+):
+    """Draft a policy clause that would close ONE gap, grounded in the requirement.
+
+    On-demand (one row at a time) so it only spends tokens when the user asks, and
+    it uses the fast Groq chat model rather than the judge for a snappy reply. The
+    result is a *draft* for human review — the UI labels it accordingly.
+    """
+    requirement = (payload.requirement or "").strip()
+    if not requirement:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing requirement.")
+
+    llm = ChatGroq(
+        model=pipeline.config.LLM_MODEL_NAME,
+        temperature=0.3,                    # a little latitude to phrase policy language
+        api_key=pipeline.config.GROQ_API_KEY,
+    )
+    try:
+        suggestion = await suggest_remediation(
+            requirement, payload.status, payload.policy_clause, payload.rationale, llm,
+        )
+    except Exception as e:
+        ref = log_and_get_ref(logger, "compliance suggest failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Couldn't draft a suggestion right now. (ref: {ref})",
+        )
+    if not suggestion:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The model returned an empty suggestion — try again.",
+        )
+    return {"suggestion": suggestion}
 
 
 @router.get("/checks")

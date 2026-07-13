@@ -135,6 +135,7 @@ export default function NewCheck() {
         phase={stream.phase}
         regName={stream.regName}
         delta={stream.delta}
+        token={token}
       />
     </div>
   );

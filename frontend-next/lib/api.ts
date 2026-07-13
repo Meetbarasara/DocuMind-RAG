@@ -7,6 +7,7 @@ import type { Session } from "./session";
 import type {
   ChatEvent,
   CheckSummary,
+  GapRow,
   PersistedCheck,
   Regulation,
   StreamEvent,
@@ -264,6 +265,24 @@ export async function getCheck(token: string, id: string): Promise<PersistedChec
   });
   if (!res.ok) throw new Error(await errorDetail(res, `Could not load check (HTTP ${res.status}).`));
   return (await res.json()) as PersistedCheck;
+}
+
+/** Draft a suggested policy clause to close one gap row (POST /compliance/suggest).
+ *  Grounded in the RBI requirement; returned as a draft for human review. */
+export async function suggestFix(row: GapRow, token: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/compliance/suggest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
+    body: JSON.stringify({
+      requirement: row.requirement,
+      status: row.status,
+      policy_clause: row.policy_clause || row.policy_quote || "",
+      rationale: row.rationale || "",
+    }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `Suggestion failed (HTTP ${res.status}).`));
+  const data = await res.json();
+  return (data.suggestion as string) || "";
 }
 
 /** Stream an answer to *question* over the user's own documents (the Ask
