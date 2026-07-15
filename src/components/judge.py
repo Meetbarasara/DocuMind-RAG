@@ -10,6 +10,10 @@ per-provider base_url covers all three — and avoids langchain-cerebras, whose
 Swappable via config.JUDGE_PROVIDER / JUDGE_MODEL with zero code change.
 """
 
+import json
+import re
+
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
 from src.components.config import Config
@@ -20,6 +24,64 @@ _PROVIDERS = {
     "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
 }
+
+
+class FakeJudgeLLM:
+    """Deterministic, zero-cost stand-in for the judge (JUDGE_PROVIDER=fake).
+
+    Exists so end-to-end tests (and key-free demos) can run a REAL compliance
+    check — SSE route, persistence, UI streaming — without live LLM calls,
+    which on the free tiers are slow (minutes of 429 backoff) and budgeted.
+    It answers the engine's two prompts with valid JSON, and its verdict
+    quotes are copied VERBATIM from the supplied excerpts so the engine's
+    evidence verification genuinely passes. Opt-in only — never a fallback.
+    """
+
+    # Same boundary set _split_clauses cuts on, so a quote never straddles two
+    # clauses (which would drop its containment score below the threshold).
+    _CLAUSE_END = re.compile(r"[.!?;:\n]")
+
+    def _first_clause(self, text: str) -> str:
+        for part in self._CLAUSE_END.split(text):
+            if len(part.strip()) >= 10:
+                return part.strip()
+        return text.strip()[:80]
+
+    def _judge_reply(self, human: str) -> dict:
+        req, _, excerpts = human.partition("\n\nCompany policy excerpts:\n")
+        req = req.removeprefix("Requirement:\n")
+        if excerpts.strip().startswith("(no policy excerpts found)"):
+            return {"status": "Gap", "policy_quote": "", "confidence": 0.9,
+                    "rationale": "Fake judge: no excerpts were retrieved."}
+        # Vary the verdict deterministically off the requirement text so a
+        # test table exercises all the UI states (filters, coverage bar).
+        status = ("Covered", "Partial", "Gap")[len(req.strip()) % 3]
+        if status == "Gap":
+            return {"status": "Gap", "policy_quote": "", "confidence": 0.9,
+                    "rationale": "Fake judge: deterministic Gap verdict."}
+        body = re.search(r"\[1\][^\n]*\n(.*?)(?=\n\n\[\d+\]|\Z)", excerpts, re.DOTALL)
+        quote = self._first_clause(body.group(1) if body else excerpts)
+        return {"status": status, "policy_quote": quote, "confidence": 0.9,
+                "rationale": f"Fake judge: deterministic {status} verdict."}
+
+    def _extract_reply(self, human: str) -> dict:
+        reqs = [{"text": part.strip(), "section": None}
+                for part in re.split(r"(?<=[.!?])\s+", human) if len(part.strip()) >= 40]
+        return {"requirements": reqs[:3]}
+
+    def invoke(self, messages):
+        system = getattr(messages[0], "content", "") if messages else ""
+        human = getattr(messages[-1], "content", "") if messages else ""
+        if '"requirements"' in system:
+            reply = self._extract_reply(human)
+        elif '"status"' in system:
+            reply = self._judge_reply(human)
+        else:  # e.g. remediation drafting — plain text, not JSON
+            return AIMessage(content="Fake judge: draft clause for testing purposes.")
+        return AIMessage(content=json.dumps(reply))
+
+    async def ainvoke(self, messages):
+        return self.invoke(messages)
 
 
 class JudgeNotConfigured(RuntimeError):
@@ -41,6 +103,8 @@ def build_judge_llm(config: Config, *, json_mode: bool = True) -> ChatOpenAI:
         JudgeNotConfigured: unknown provider, or its key is missing/blank.
     """
     provider = (config.JUDGE_PROVIDER or "").strip().lower()
+    if provider == "fake":
+        return FakeJudgeLLM()
     if provider not in _PROVIDERS:
         raise JudgeNotConfigured(
             f"Unknown JUDGE_PROVIDER {provider!r}. Options: {', '.join(_PROVIDERS)}"
