@@ -208,6 +208,12 @@ class Config(BaseSettings):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
+    # Origins matching this regex are allowed IN ADDITION to CORS_ORIGINS. A
+    # fixed list can't cover LAN access (http://10.x.x.x:3000 — the IP is
+    # DHCP-assigned and changes), which surfaced as "Failed to fetch" on every
+    # API call when the app was opened via the machine's LAN IP. None = off.
+    CORS_ORIGIN_REGEX: Optional[str] = None
+
     @field_validator(*_REQUIRED_SECRETS)
     @classmethod
     def _required_secret_not_blank(cls, v: str, info) -> str:

@@ -15,8 +15,15 @@ import type {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Hardcoding localhost broke LAN access: a page opened at http://10.x.x.x:3000
+// still called http://localhost:8000 (unreachable or CORS-blocked) and every API
+// call failed with "Failed to fetch". Default to the host the page was loaded
+// from; NEXT_PUBLIC_API_BASE still overrides for real deployments.
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") ||
+  (typeof window !== "undefined"
+    ? `http://${window.location.hostname}:8000`
+    : "http://localhost:8000");
 
 export interface RunOptions {
   regulationId: string;

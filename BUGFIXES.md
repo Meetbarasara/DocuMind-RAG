@@ -1242,3 +1242,35 @@ A graded containment score is the right middle ground: strict enough that a quot
 
 ### Explain it simply (interview answer)
 My compliance tool shows "here's the exact sentence in your policy, and here's the rule it satisfies." To trust that, I check the AI's quoted sentence really exists in your document. The old check demanded a *character-perfect* match against a big page-sized block of text — so if the AI quoted your policy faithfully but tidied up one word, the check failed and wrongly stamped a correct finding "needs review"; and the best it could point at was a whole page-sized blob, not the one sentence. I changed it to find the single sentence that best matches the quote and score *how much* of the quote is actually in it: a real quote (even lightly reworded) scores high and gets cited to that exact sentence; a made-up quote scores near zero and gets flagged. I also added a benchmark that measures, across a labeled set, how often the cited evidence truly grounds — so I can prove the trustworthiness number, not just claim it.
+
+---
+
+## "Failed to fetch" on every API call when the app is opened via the machine's LAN IP
+
+**Status:** Fixed 2026-07-15
+
+### Symptom
+Opening the Next.js app at `http://10.200.3.54:3000` (the machine's LAN IP instead of `localhost:3000`) and clicking **Create account** — or any action that calls the backend — fails instantly with `Failed to fetch`. The same flow works when the page is opened at `http://localhost:3000`.
+
+### Root Cause
+Two independent hardcodings of "localhost", either of which kills the request:
+1. **Frontend:** `lib/api.ts` defaulted `API_BASE` to `http://localhost:8000`. The page's JavaScript runs in the *browser*, so from another device "localhost" is that device (nothing listening); even on the same PC the page origin `http://10.200.3.54:3000` calling `http://localhost:8000` is a cross-origin request…
+2. **Backend:** …and the CORS allowlist (`CORS_ORIGINS`) contained only `http://localhost:3000` / `:8501`. The browser blocks the response and `fetch` surfaces the generic `TypeError: Failed to fetch`, which the login form renders verbatim.
+
+A fixed allowlist can't solve this on its own: the LAN IP is DHCP-assigned and changes.
+
+### Fix
+- `frontend-next/lib/api.ts`: when `NEXT_PUBLIC_API_BASE` is unset, derive the API base from the page's own host — `http://${window.location.hostname}:8000` — so however you reach the frontend (localhost, LAN IP, Docker host), it calls the backend on that same host. The env var still overrides for real deployments.
+- `Config.CORS_ORIGIN_REGEX` (new, default `None` = off) passed as `allow_origin_regex` to Starlette's CORSMiddleware — origins matching it are allowed *in addition to* `CORS_ORIGINS`. The dev `.env` sets it to a private-range pattern (10.x / 192.168.x / 172.16-31.x), so any DHCP address works without editing config again.
+- Run the backend with `--host 0.0.0.0` (or `python -m src.api.main`, which already uses `API_HOST=0.0.0.0`) so it listens on the LAN interface, not just loopback.
+
+### Why this approach
+Same-host derivation removes the whole class of "the frontend guessed the wrong backend address" bugs rather than patching one IP. The regex is opt-in and scoped to private ranges: production behavior is unchanged unless the env var is set, and a public origin can never match the documented pattern.
+
+### Verification
+- `tests/test_cors_config.py`: regex default off; env round-trip; the documented pattern fullmatches `http://10.200.3.54:3000` and `http://192.168.1.7:3000` but not a public origin (Starlette matches with `re.fullmatch`); the app actually wires `allow_origin_regex` into CORSMiddleware. 5 passed.
+- Frontend `tsc --noEmit` + `next build` clean.
+- Live repro was the user's screenshot (signup at `10.200.3.54:3000` → "Failed to fetch"); localhost worked before and still does.
+
+### Explain it simply (interview answer)
+The web page and the API are two separate servers. The page had the API's address written into it as "localhost" — which means "this same device". As soon as the page was opened through the computer's network address instead, the browser either looked for the API on the wrong machine or refused the call because the API's guest-list of allowed websites only contained "localhost". I made the page ask for the API on whatever host the page itself was loaded from, and taught the API to accept requests from private network addresses in dev. One fix removes every future "works on localhost, breaks on the network" surprise.
