@@ -57,13 +57,13 @@ class _FakeLocalEmbeddings:
 
 @pytest.fixture(autouse=True)
 def _stub_local_embeddings(monkeypatch):
-    """Replace HuggingFaceEmbeddings in both modules that construct it, before any
-    test builds a real manager. A test may still override with its own fake."""
+    """Replace HuggingFaceEmbeddings before any test builds a real manager.
+    Both EmbeddingManager and RetrievalManager construct it through
+    embeddings.load_local_embeddings, so one patch point covers everything.
+    A test may still override with its own fake."""
     import src.components.embeddings as _emb
-    import src.components.retrieval as _ret
 
     monkeypatch.setattr(_emb, "HuggingFaceEmbeddings", _FakeLocalEmbeddings)
-    monkeypatch.setattr(_ret, "HuggingFaceEmbeddings", _FakeLocalEmbeddings)
 
 
 @pytest.fixture(autouse=True)

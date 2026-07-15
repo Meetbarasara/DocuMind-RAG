@@ -1296,3 +1296,25 @@ Signing up or logging in with an email the backend rejects (e.g. `user@localhost
 
 ### Explain it simply (interview answer)
 When the server rejects a form, it sometimes replies with a structured list of validation problems instead of one sentence. The page assumed "the error is always a sentence" and printed the list object directly, which JavaScript renders as the useless text "[object Object]". I added a small translator that turns whatever the server sends — sentence, list, or object — into readable text, so the user always sees the actual reason.
+
+---
+
+## API startup died on TLS-intercepting networks while loading an already-cached embedding model
+
+**Status:** Fixed 2026-07-15 (hit by the user's first `npm run e2e` on a network with HTTPS scanning)
+
+### Symptom
+`uvicorn` failed at startup — lifespan crashed with `SSL: CERTIFICATE_VERIFY_FAILED (self-signed certificate in certificate chain)` retries against `huggingface.co`, ending in `RuntimeError: Cannot send a request, as the client has been closed`. The embedding model (`all-mpnet-base-v2`, ~420MB) was fully downloaded and cached on the machine; the app still refused to boot. Same machine, different network (no interception): booted fine.
+
+### Root Cause
+`HuggingFaceEmbeddings(...)` → `SentenceTransformer(...)` performs online freshness/adapter-config probes against the Hugging Face Hub **even when the model is fully cached**. On networks that intercept TLS (antivirus "HTTPS scanning", corporate/campus proxies), Python's certifi bundle doesn't trust the interceptor's certificate, the probe fails, and huggingface_hub's retry path then trips over its own closed httpx client — the escaping `RuntimeError` bypasses the "connection errors fall back to cache" guard and kills the process. The app had a hard runtime dependency on huggingface.co reachability it never needed.
+
+### Fix
+New `embeddings.load_local_embeddings(config)` — used by BOTH `EmbeddingManager` and `RetrievalManager` (previously two duplicate constructions): try `model_kwargs={"local_files_only": True}` first (pure cache load, zero network), fall back to the normal downloading load only if the cache-only attempt fails (fresh machine). conftest's stub point collapses to the one module accordingly.
+
+### Verification
+- `tests/test_embeddings_offline_first.py`: cache hit → exactly one construction with `local_files_only=True`; simulated cache miss → falls back to a downloading construction; `EmbeddingManager` goes through the loader. Full suite **272 passed**, ruff clean.
+- Real-model probe on this machine: `load_local_embeddings(Config())` + `embed_query` → **1.1s, no network requests** (previously multi-second with Hub HEAD requests — so this also shaves startup latency everywhere).
+
+### Explain it simply (interview answer)
+The AI model that turns text into vectors was already saved on disk, but the library still "called home" to check for updates every time it loaded. On my Wi-Fi that check happened to be blocked by security software that inspects secure traffic, so the whole backend refused to start — over a file it already had. I changed the loader to say "use the copy on disk, ask the internet only if you don't have it." The app now starts on any network, and a little faster too.

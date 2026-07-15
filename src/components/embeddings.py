@@ -12,6 +12,30 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 
+def load_local_embeddings(config: Config) -> HuggingFaceEmbeddings:
+    """Build the local sentence-transformers embedder, cache-first.
+
+    local_files_only=True loads the already-downloaded model with ZERO network
+    calls. Without it, transformers HEAD-requests huggingface.co (adapter-config
+    probe) even when the model is fully cached — and on networks with TLS
+    interception (antivirus "HTTPS scanning", corporate proxies) that request
+    dies with CERTIFICATE_VERIFY_FAILED and takes the whole API startup down.
+    A machine that has never downloaded the model falls back to a normal
+    (downloading) load, so first-run behavior is unchanged.
+    """
+    common = dict(
+        model_name=config.EMBEDDING_MODEL_NAME,
+        encode_kwargs={"normalize_embeddings": True},
+    )
+    try:
+        return HuggingFaceEmbeddings(
+            model_kwargs={"device": "cpu", "local_files_only": True}, **common
+        )
+    except Exception as e:
+        logger.info("Embedding model not in local cache (%s); downloading", e)
+        return HuggingFaceEmbeddings(model_kwargs={"device": "cpu"}, **common)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  EmbeddingManager — deduplicate, embed, and upsert documents to Pinecone
 # ══════════════════════════════════════════════════════════════════════════════
@@ -30,11 +54,7 @@ class EmbeddingManager:
         # on every single upload.
         # normalize_embeddings=True => unit vectors, which is what the cosine
         # Pinecone index expects. Runs locally on CPU; no API key, no quota.
-        self._embedding_model = HuggingFaceEmbeddings(
-            model_name=self.config.EMBEDDING_MODEL_NAME,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        self._embedding_model = load_local_embeddings(self.config)
 
     def embed_query(self, text: str) -> list:
         """Embed a single query string (reuses the shared embedding model)."""

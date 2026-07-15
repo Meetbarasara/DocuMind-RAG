@@ -1,10 +1,10 @@
 from typing import List
 
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
 from src.components.config import Config
+from src.components.embeddings import load_local_embeddings
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,14 +33,10 @@ class RetrievalManager:
     def __init__(self, config: Config):
         self.config = config
 
-        # Local sentence-transformers (CPU, no API key). normalize_embeddings
-        # matches the cosine Pinecone index. Must use the SAME model + settings
-        # as EmbeddingManager so query vectors live in the ingest vector space.
-        self._embeddings = HuggingFaceEmbeddings(
-            model_name=self.config.EMBEDDING_MODEL_NAME,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        # Local sentence-transformers (CPU, no API key). Shares the cache-first
+        # loader with EmbeddingManager: SAME model + settings so query vectors
+        # live in the ingest vector space, and zero network when already cached.
+        self._embeddings = load_local_embeddings(self.config)
         # A10: pass the key directly to the client instead of mutating the
         # process-global os.environ — a constructor shouldn't have that kind
         # of surprising, process-wide side effect.
