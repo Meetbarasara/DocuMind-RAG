@@ -181,7 +181,16 @@ async def list_regulations(
     db: SupabaseManager = Depends(get_db),
 ):
     """List regulations available to check against (shared reference data)."""
-    regs = await asyncio.to_thread(db.list_regulations)
+    try:
+        regs = await asyncio.to_thread(db.list_regulations)
+    except Exception as e:
+        # An availability blip must surface as an error the UI can show —
+        # not as a 200 with [] that renders as "No regulations yet".
+        ref = log_and_get_ref(logger, "Listing regulations failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not load regulations — try again. (ref: {ref})",
+        )
     return {"regulations": regs}
 
 
@@ -322,7 +331,14 @@ async def check(
 
     # Validate up front: once we return a StreamingResponse the HTTP status is
     # already 200 and can't be changed, so all the failable checks happen here.
-    regulation = await asyncio.to_thread(db.get_regulation, payload.regulation_id)
+    try:
+        regulation = await asyncio.to_thread(db.get_regulation, payload.regulation_id)
+    except Exception as e:
+        ref = log_and_get_ref(logger, "Loading regulation failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not load the regulation — try again. (ref: {ref})",
+        )
     if not regulation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Regulation not found.")
 
@@ -415,7 +431,14 @@ async def recheck(
     if not prior:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prior check not found.")
 
-    regulation = await asyncio.to_thread(db.get_regulation, prior.get("regulation_id"))
+    try:
+        regulation = await asyncio.to_thread(db.get_regulation, prior.get("regulation_id"))
+    except Exception as e:
+        ref = log_and_get_ref(logger, "Loading regulation failed", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not load the regulation — try again. (ref: {ref})",
+        )
     if not regulation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

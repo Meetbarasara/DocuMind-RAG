@@ -6,10 +6,12 @@ Provides:
   - File metadata persistence in the ``user_documents`` Supabase table
 """
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
+import httpx
 from supabase import Client, create_client
 
 from src.components.config import Config
@@ -18,6 +20,50 @@ from src.logger import get_logger
 from src.utils import sanitize_filename
 
 logger = get_logger(__name__)
+
+# Messages that identify a "try again" socket condition when the exception type
+# alone doesn't (some client libs wrap the original OSError in their own type).
+_TRANSIENT_MARKERS = ("WinError 10035", "WouldBlock", "timed out", "temporarily unavailable")
+
+
+def _is_transient_net_error(exc: BaseException) -> bool:
+    """True for retryable network blips, walking the exception chain.
+
+    The concrete case that motivated this: on Windows, the shared sync HTTP
+    client under two concurrent requests can surface WSAEWOULDBLOCK
+    ([WinError 10035]) — the socket just wasn't ready; an immediate retry
+    succeeds."""
+    e: Optional[BaseException] = exc
+    for _ in range(5):
+        if e is None:
+            return False
+        if isinstance(e, (OSError, httpx.HTTPError)):
+            return True
+        if any(marker in str(e) for marker in _TRANSIENT_MARKERS):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
+def _retry_transient(fn: Callable, what: str, attempts: int = 3, base_delay: float = 0.15):
+    """Call ``fn()``, briefly retrying transient network errors.
+
+    Anything still failing after the retries (or failing for a non-network
+    reason) is raised to the caller. Callers must NOT translate that into an
+    empty result: an availability blip rendering as "no data" is exactly how
+    the WinError-10035 bug presented a fully seeded regulations table as
+    "No regulations yet" (see BUGFIXES.md)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == attempts or not _is_transient_net_error(e):
+                raise
+            logger.warning(
+                "%s: transient network error (attempt %d/%d), retrying: %s",
+                what, attempt, attempts, e,
+            )
+            time.sleep(base_delay * attempt)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -509,32 +555,48 @@ class SupabaseManager:
 
     def list_regulations(self) -> List[Dict]:
         """List available regulations, newest first. Omits the large
-        ``requirements`` blob — that's fetched per check via get_regulation."""
+        ``requirements`` blob — that's fetched per check via get_regulation.
+
+        Raises (CustomException) when the store can't be queried: this used to
+        swallow every error into ``[]``, so a one-off socket blip made the UI
+        assert "No regulations yet" while the table held data."""
         try:
-            result = (
-                self.service_client.table("regulations")
-                .select("id, name, regulator, circular_id, namespace, ingested_at")
-                .order("ingested_at", desc=True)
-                .execute()
+            result = _retry_transient(
+                lambda: (
+                    self.service_client.table("regulations")
+                    .select("id, name, regulator, circular_id, namespace, ingested_at")
+                    .order("ingested_at", desc=True)
+                    .execute()
+                ),
+                "list_regulations",
             )
             return result.data or []
         except Exception as e:
             logger.error("list_regulations failed: %s", e)
-            return []
+            raise CustomException(f"Could not list regulations: {e}") from e
 
     def get_regulation(self, regulation_id: str) -> Optional[Dict]:
-        """Fetch one regulation incl. its cached ``requirements``, or None."""
+        """Fetch one regulation incl. its cached ``requirements``.
+
+        ``None`` means the row genuinely doesn't exist (callers 404 on it) — a
+        transient network failure raises instead, so "couldn't reach the store"
+        never masquerades as "this regulation was deleted"."""
         try:
-            result = (
-                self.service_client.table("regulations")
-                .select("*")
-                .eq("id", regulation_id)
-                .limit(1)
-                .execute()
+            result = _retry_transient(
+                lambda: (
+                    self.service_client.table("regulations")
+                    .select("*")
+                    .eq("id", regulation_id)
+                    .limit(1)
+                    .execute()
+                ),
+                "get_regulation",
             )
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error("get_regulation failed: %s", e)
+            if _is_transient_net_error(e):
+                raise CustomException(f"Could not load regulation: {e}") from e
             return None
 
     def save_compliance_check(

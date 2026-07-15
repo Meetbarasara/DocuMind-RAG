@@ -1318,3 +1318,33 @@ New `embeddings.load_local_embeddings(config)` — used by BOTH `EmbeddingManage
 
 ### Explain it simply (interview answer)
 The AI model that turns text into vectors was already saved on disk, but the library still "called home" to check for updates every time it loaded. On my Wi-Fi that check happened to be blocked by security software that inspects secure traffic, so the whole backend refused to start — over a file it already had. I changed the loader to say "use the copy on disk, ask the internet only if you don't have it." The app now starts on any network, and a little faster too.
+
+---
+
+## A transient socket blip rendered the seeded regulations table as "No regulations yet"
+
+**Status:** Fixed 2026-07-15 (caught by the user's E2E run; data confirmed intact in Supabase)
+
+### Symptom
+`/check/new` showed "No regulations yet — add one." and the check spec failed with an empty regulation dropdown — while the `regulations` table verifiably held both seeded regulations (synthetic 15-req + real RBI 34-req). `logs/app.log` had the real story: `list_regulations failed: [WinError 10035] A non-blocking socket operation could not be completed immediately`.
+
+### Root Cause
+Two compounding problems:
+1. **Transient condition:** on Windows, the shared sync Supabase HTTP client under two concurrent requests (the page fires `listRegulations` + `listDocuments` simultaneously on mount) can surface WSAEWOULDBLOCK — a "socket not ready, try again" condition, not a real failure.
+2. **Error conflated with emptiness:** `list_regulations` caught *every* exception and returned `[]` (and `get_regulation` returned `None`, which callers translate to 404). So a one-off availability blip was presented to the user as the authoritative business fact "you have no regulations" / "regulation deleted". No retry, no error surfaced, nothing for the UI to distinguish.
+
+### Fix
+- `database._retry_transient(fn, what)` — retries briefly (3 attempts, growing delay) when `_is_transient_net_error` matches (OSError/httpx transport errors or WinError-10035/WouldBlock/timeout markers, walking the exception chain for wrapped causes).
+- `list_regulations` now **raises** `CustomException` on final failure instead of returning `[]`; `get_regulation` keeps `None` strictly for "row doesn't exist" and raises on exhausted transient failures.
+- The three routes that call them (`GET /regulations`, `/check`, `/recheck`) convert that into a clean **503 "Could not load regulations/the regulation — try again. (ref: …)"** — so the UI shows a truthful retryable error instead of an empty state.
+- E2E spec 04 now distinguishes the three outcomes (dropdown / load error / genuinely empty table) and names the real cause in its failure message.
+
+### Why this approach
+Retrying WSAEWOULDBLOCK where it occurs fixes the 99% case invisibly; making the residual failure loud fixes the design flaw that hid it. "Empty list" and "couldn't reach the store" are different facts and now travel different paths — this matters in a compliance tool, where a user seeing "No regulations yet" might reasonably conclude their reference data was lost.
+
+### Verification
+- New `tests/test_regulations_resilience.py` (6): blip→retry→rows; exhausted transient → raises (pre-fix: returned `[]`); `get_regulation` retry + genuine-absence `None`; non-transient not retried; wrapped-cause detection; route returns **503** with readable detail, never 200-`[]`. Red-first on the old behavior via the always-failing fake.
+- Full suite **278 passed**, ruff clean, `tsc` clean. Regulations confirmed present in Supabase via direct SQL.
+
+### Explain it simply (interview answer)
+Once in a while Windows tells a program "the network socket isn't ready, ask again in a millisecond." My database helper treated that hiccup as "there is no data" and returned an empty list, so the app confidently told the user they had no regulations — right while both regulations sat in the database. The fix is two honest behaviors: automatically retry the hiccup (it virtually always succeeds on the second try), and if the database is truly unreachable, say "couldn't load, try again" instead of pretending the answer was "nothing". An error and an empty result are different things, and a compliance product especially must never confuse them.

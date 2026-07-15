@@ -14,10 +14,20 @@ test("run check → rows stream → persisted → re-check → history", async (
   await page.goto("/check/new");
 
   // Regulations must be seeded (scripts/seed_regulation.py) for a check to run.
+  // Distinguish the three outcomes so a failure names its real cause: the
+  // dropdown (good), a load error (backend/network), or a truly empty table.
   const select = page.locator("select");
-  await expect(select, "no regulations in the dropdown — seed one first").toBeVisible({
-    timeout: 30_000,
-  });
+  const loadError = page.locator("p.st-gap");
+  const emptyState = page.getByText("No regulations yet");
+  await expect(select.or(loadError).or(emptyState)).toBeVisible({ timeout: 30_000 });
+  if (await loadError.isVisible()) {
+    throw new Error(`regulations failed to load: ${await loadError.innerText()}`);
+  }
+  if (await emptyState.isVisible()) {
+    throw new Error(
+      "no regulations in the database — seed one first (python -m scripts.seed_regulation)",
+    );
+  }
   // Prefer the small synthetic regulation when present (15 requirements).
   const labels = await select.locator("option").allTextContents();
   const synthetic = labels.findIndex((l) => /synthetic/i.test(l));
