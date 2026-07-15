@@ -1348,3 +1348,30 @@ Retrying WSAEWOULDBLOCK where it occurs fixes the 99% case invisibly; making the
 
 ### Explain it simply (interview answer)
 Once in a while Windows tells a program "the network socket isn't ready, ask again in a millisecond." My database helper treated that hiccup as "there is no data" and returned an empty list, so the app confidently told the user they had no regulations — right while both regulations sat in the database. The fix is two honest behaviors: automatically retry the hiccup (it virtually always succeeds on the second try), and if the database is truly unreachable, say "couldn't load, try again" instead of pretending the answer was "nothing". An error and an empty result are different things, and a compliance product especially must never confuse them.
+
+---
+
+## The same socket blip also faked "invalid token" (random logouts) — and the UI claimed "No regulations yet" while still loading
+
+**Status:** Fixed 2026-07-15 (both exposed by consecutive E2E runs on the user's machine)
+
+### Symptom
+1. Backend log during a run: `get_current_user: invalid token — [WinError 10035] A non-blocking socket operation could not be completed immediately` — the same transient Windows socket condition as the previous entry, this time during **token validation**, which runs on every authenticated request. The API answered 401 "Token is invalid or has expired", which the client reasonably treats as *session expired*. Net effect: a network hiccup could randomly "log out" a signed-in user.
+2. Separately, the New-check screen (and Regulations page) rendered **"No regulations yet — add one"** during the ~half-second the regulation list was still being fetched — a false factual claim while loading, seen by any user on a slow connection (and raced by the E2E assertion, which is how it was caught: the Playwright trace showed the page's fetches aborted with the "empty" message already painted while Supabase's own logs showed the data returning 200).
+
+### Root Cause
+Same design flaw at two more layers: **"couldn't reach / haven't finished asking" was presented as a definitive business answer** ("your token is bad", "you have no regulations"). `get_current_user` swallowed every exception into `None`→401; the React components initialize lists to `[]` and their empty-state render couldn't tell "still loading" from "loaded, empty".
+
+### Fix
+- `database.get_current_user`: wrapped in `_retry_transient`; `None` (→401) is now reserved for a genuinely rejected token, an exhausted transient failure raises.
+- `dependencies.get_current_user`: that failure becomes **503 "Could not verify your session right now — try again."** — never 401, so clients don't drop the session over a blip.
+- `get_user_documents`, `list_compliance_checks`, `get_compliance_check`: same `_retry_transient` wrap (their final-failure semantics unchanged for now).
+- `NewCheck` + `RegulationsPanel`: a `loading` flag — "Loading regulations…" until the fetch settles; "No regulations yet" only when that is a verified fact. (`ChecksList` already did this correctly.)
+- E2E spec 04: the three-way outcome check now counts each state individually (`expect.poll`) instead of `.or()`, which strict-mode-violates when two states are visible at once.
+
+### Verification
+- 4 new tests in `tests/test_regulations_resilience.py`: blip → retried → user returned; outage → raises (pre-fix: `None`, i.e. the random-logout path); rejected token still → `None`; dependency-level: auth blip → **503, not 401**, with the retry message.
+- Full backend suite **282 passed**, ruff clean, `tsc` clean, and the complete Playwright suite **9/9** (the previously failing check flow: 34.5s, streams, persists, re-checks).
+
+### Explain it simply (interview answer)
+Two more places made the same mistake as the regulations bug, so I fixed the family, not the instance. First: every request re-checks "is this login token valid?" — when that check couldn't reach the auth service for a millisecond, the code answered "the token is bad", and the app logged the user out. Now it retries, and if the service is truly down it says "try again in a moment" — being unreachable is not the same as being wrong. Second: the page showed "You have no regulations" while it was still waiting for the list to arrive. Now it says "Loading…" until it actually knows. The theme across all three fixes: *loading, empty, error, and invalid are four different facts, and a compliance product must never present one as another.*

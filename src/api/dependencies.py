@@ -64,7 +64,16 @@ async def get_current_user(
     # EVERY authenticated request. Without to_thread it blocks FastAPI's
     # event loop for that round-trip on every single request, serializing
     # all concurrent traffic across the whole API, not just one route.
-    user = await asyncio.to_thread(db.get_current_user, token)
+    try:
+        user = await asyncio.to_thread(db.get_current_user, token)
+    except Exception:
+        # Auth service unreachable ≠ bad credentials: a 401 here makes the
+        # client treat a network blip as "session expired" and log the user
+        # out. Tell it to retry instead. (The db layer already logged why.)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not verify your session right now — try again.",
+        )
 
     if not user:
         raise HTTPException(

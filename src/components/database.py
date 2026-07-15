@@ -173,11 +173,20 @@ class SupabaseManager:
             raise CustomException(f"Session refresh failed: {e}") from e
 
     def get_current_user(self, access_token: str) -> Optional[Dict]:
-        """Validate a JWT and return the user payload, or *None* if invalid."""
+        """Validate a JWT and return the user payload, or *None* if invalid.
+
+        ``None`` is reserved for a REJECTED token (callers 401 on it). A
+        transient network blip while validating raises instead — treating it
+        as "invalid token" randomly logged users out mid-session whenever
+        Windows surfaced WSAEWOULDBLOCK under concurrent requests."""
         try:
-            response = self.client.auth.get_user(access_token)
+            response = _retry_transient(
+                lambda: self.client.auth.get_user(access_token), "get_current_user"
+            )
             return response.user
         except Exception as e:
+            if _is_transient_net_error(e):
+                raise CustomException(f"Auth service unreachable: {e}") from e
             logger.warning("get_current_user: invalid token — %s", e)
             return None
 
@@ -386,12 +395,15 @@ class SupabaseManager:
             List of row dicts from ``user_documents``.
         """
         try:
-            result = (
-                self.service_client.table("user_documents")
-                .select("*")
-                .eq("user_id", user_id)
-                .order("uploaded_at", desc=True)
-                .execute()
+            result = _retry_transient(
+                lambda: (
+                    self.service_client.table("user_documents")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .order("uploaded_at", desc=True)
+                    .execute()
+                ),
+                "get_user_documents",
             )
             return result.data or []
         except Exception as e:
@@ -624,12 +636,15 @@ class SupabaseManager:
     def list_compliance_checks(self, user_id: str) -> List[Dict]:
         """List *user_id*'s past checks, newest first (omits the big ``rows``)."""
         try:
-            result = (
-                self.service_client.table("compliance_checks")
-                .select("id, policy_label, regulation_id, summary, created_at")
-                .eq("user_id", user_id)
-                .order("created_at", desc=True)
-                .execute()
+            result = _retry_transient(
+                lambda: (
+                    self.service_client.table("compliance_checks")
+                    .select("id, policy_label, regulation_id, summary, created_at")
+                    .eq("user_id", user_id)
+                    .order("created_at", desc=True)
+                    .execute()
+                ),
+                "list_compliance_checks",
             )
             return result.data or []
         except Exception as e:
@@ -639,13 +654,16 @@ class SupabaseManager:
     def get_compliance_check(self, user_id: str, check_id: str) -> Optional[Dict]:
         """Fetch one persisted check incl. its ``rows``, scoped to *user_id*."""
         try:
-            result = (
-                self.service_client.table("compliance_checks")
-                .select("*")
-                .eq("id", check_id)
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
+            result = _retry_transient(
+                lambda: (
+                    self.service_client.table("compliance_checks")
+                    .select("*")
+                    .eq("id", check_id)
+                    .eq("user_id", user_id)
+                    .limit(1)
+                    .execute()
+                ),
+                "get_compliance_check",
             )
             return result.data[0] if result.data else None
         except Exception as e:

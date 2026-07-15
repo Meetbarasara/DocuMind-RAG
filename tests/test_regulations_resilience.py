@@ -86,6 +86,68 @@ def test_transient_detection_walks_wrapped_exceptions():
     assert not _is_transient_net_error(ValueError("bad column"))
 
 
+# ── Token validation: a blip must not read as "invalid token" ────────────────
+#
+# get_current_user runs on EVERY authenticated request; pre-fix it swallowed a
+# WSAEWOULDBLOCK into None → 401 "Token is invalid or has expired" → the client
+# treated a network blip as an expired session (random logouts).
+
+class _FlakyAuth:
+    def __init__(self, failures: int, exc: Exception = WSAEWOULDBLOCK):
+        self.failures = failures
+        self.exc = exc
+        self.calls = 0
+
+    def get_user(self, token):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.exc
+        return SimpleNamespace(user=SimpleNamespace(id="u1"))
+
+
+def _auth_manager(auth) -> SupabaseManager:
+    mgr = SupabaseManager.__new__(SupabaseManager)
+    mgr.client = SimpleNamespace(auth=auth)
+    return mgr
+
+
+def test_token_validation_retries_transient_blips():
+    auth = _FlakyAuth(failures=1)
+    assert _auth_manager(auth).get_current_user("tok").id == "u1"
+    assert auth.calls == 2
+
+
+def test_auth_outage_raises_instead_of_faking_invalid_token():
+    with pytest.raises(CustomException):
+        _auth_manager(_FlakyAuth(failures=99)).get_current_user("tok")
+
+
+def test_genuinely_rejected_token_still_returns_none():
+    class _Reject:
+        def get_user(self, token):
+            raise ValueError("invalid JWT")
+
+    assert _auth_manager(_Reject()).get_current_user("tok") is None
+
+
+@pytest.mark.asyncio
+async def test_auth_blip_returns_503_not_401():
+    class _AuthDownDb:
+        def get_current_user(self, token):
+            raise CustomException("Auth service unreachable: [WinError 10035] ...")
+
+    app.dependency_overrides[get_db] = lambda: _AuthDownDb()
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            res = await c.get(
+                "/api/compliance/regulations", headers={"Authorization": "Bearer x"}
+            )
+        assert res.status_code == 503
+        assert "verify your session" in res.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 @pytest.mark.asyncio
 async def test_route_returns_503_not_empty_list_when_store_unreachable():
     class _DownDb:
