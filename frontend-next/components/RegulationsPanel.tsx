@@ -21,6 +21,9 @@ export default function RegulationsPanel() {
   const { session } = useSession();
   const token = session?.accessToken;
   const [regs, setRegs] = useState<Regulation[]>([]);
+  // Same loading≠empty distinction as NewCheck: never claim "No regulations
+  // yet" while the list is still being fetched.
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Add-a-regulation form state
@@ -36,7 +39,8 @@ export default function RegulationsPanel() {
     setError(null);
     listRegulations(token)
       .then((r) => alive && setRegs(r))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
@@ -127,7 +131,7 @@ export default function RegulationsPanel() {
             Regulations
           </h2>
           <span className="text-xs tabular-nums text-[var(--muted)]">
-            {regs.length} available
+            {loading ? "…" : `${regs.length} available`}
           </span>
         </div>
         {regs.length ? (
@@ -155,6 +159,8 @@ export default function RegulationsPanel() {
               </li>
             ))}
           </ul>
+        ) : loading ? (
+          <p className="text-sm text-[var(--muted)]">Loading…</p>
         ) : (
           <p className="text-sm italic text-[var(--muted)]">
             No regulations yet — add one above.

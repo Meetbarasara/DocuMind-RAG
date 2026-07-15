@@ -18,6 +18,10 @@ export default function NewCheck() {
   const token = session?.accessToken;
 
   const [regulations, setRegulations] = useState<Regulation[]>([]);
+  // "Loading" and "empty" are different facts: without this flag the screen
+  // asserted "No regulations yet" for the moments the list was still in
+  // flight — a false claim (and a race for anything reading the screen).
+  const [regsLoading, setRegsLoading] = useState(true);
   const [regId, setRegId] = useState("");
   const [docs, setDocs] = useState<DocInfo[]>([]);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -34,7 +38,8 @@ export default function NewCheck() {
         setRegulations(r);
         setRegId((prev) => prev || r[0]?.id || "");
       })
-      .catch((e) => alive && setLiveError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => alive && setLiveError(e instanceof Error ? e.message : String(e)))
+      .finally(() => alive && setRegsLoading(false));
     listDocuments(token)
       .then((d) => alive && setDocs(d))
       .catch(() => {/* non-fatal */});
@@ -85,6 +90,8 @@ export default function NewCheck() {
                   </option>
                 ))}
               </select>
+            ) : regsLoading ? (
+              <p className="text-sm text-[var(--muted)]">Loading regulations…</p>
             ) : (
               <p className="text-sm text-[var(--muted)]">
                 No regulations yet —{" "}
