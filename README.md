@@ -284,6 +284,16 @@ The moat. Two offline, CI-gated eval suites over versioned gold sets — no live
 
 Health: **250+ tests** (`pytest`), `ruff` + `pyflakes` clean, on every push.
 
+**Browser end-to-end tests** — `frontend-next/e2e/` (Playwright). One command drives the real app like a user — sign-up/login, policy upload into Pinecone, a full streamed gap check (persisted, re-checked, exported), Ask, and delete — against the real backend with a deterministic **fake judge** (`JUDGE_PROVIDER=fake`), so a complete run costs zero LLM tokens and takes ~3 minutes:
+
+```bash
+cd frontend-next
+npx playwright install chromium   # once
+npm run e2e
+```
+
+It boots both servers itself on test ports (8010/3010), creates a throwaway Supabase user, and deletes it (and all its data) afterwards.
+
 ---
 
 ## Configuration

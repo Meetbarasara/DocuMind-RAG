@@ -1,0 +1,14 @@
+Acme Finance Limited internal Know Your Customer and Anti Money Laundering Policy
+
+Customer identification is completed at onboarding using an Officially Valid Document such as a passport, driving licence, or Aadhaar number.
+Customer due diligence is performed for every new relationship before an account is opened.
+Records of identification data and transactions are retained for five years after the business relationship ends.
+The Principal Officer is responsible for reporting suspicious transactions to FIU-IND without undue delay.
+Customers are classified into low, medium, and high risk categories based on their profile and product usage.
+Enhanced due diligence applies to high-risk customers, including senior management approval before onboarding.
+Periodic KYC updation is carried out every two years for high-risk customers and every ten years for low-risk customers.
+Video-based Customer Identification Process may be used for remote onboarding where permitted by the regulator.
+The beneficial owner of a legal entity customer is identified and verified before establishing the relationship.
+Screening against applicable sanctions lists is performed at onboarding and on an ongoing basis.
+Staff receive annual training on Know Your Customer and anti money laundering obligations.
+Internal audit reviews the effectiveness of these controls once a year and reports to the board.
