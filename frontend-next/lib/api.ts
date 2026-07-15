@@ -131,10 +131,33 @@ export async function listRegulations(token?: string): Promise<Regulation[]> {
 
 // ── Auth + documents (self-serve Live mode) ─────────────────────────────────
 
+/** Flatten an error payload into readable text. FastAPI validation errors
+ *  (HTTP 422) put an ARRAY of objects in `detail` — returning that as-is made
+ *  React render the message as "[object Object]". */
+function detailToText(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail.trim() || fallback;
+  if (Array.isArray(detail)) {
+    const msgs = detail.map((d) =>
+      d && typeof d === "object" && "msg" in d
+        ? String((d as { msg: unknown }).msg)
+        : JSON.stringify(d),
+    );
+    if (msgs.length) return msgs.join("; ");
+  }
+  if (detail != null) {
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      /* fall through to the fallback */
+    }
+  }
+  return fallback;
+}
+
 async function errorDetail(res: Response, fallback: string): Promise<string> {
   try {
     const data = await res.json();
-    return (data && (data.detail || data.message)) || fallback;
+    return detailToText(data?.detail ?? data?.message, fallback);
   } catch {
     return fallback;
   }

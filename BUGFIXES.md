@@ -1274,3 +1274,25 @@ Same-host derivation removes the whole class of "the frontend guessed the wrong 
 
 ### Explain it simply (interview answer)
 The web page and the API are two separate servers. The page had the API's address written into it as "localhost" — which means "this same device". As soon as the page was opened through the computer's network address instead, the browser either looked for the API on the wrong machine or refused the call because the API's guest-list of allowed websites only contained "localhost". I made the page ask for the API on whatever host the page itself was loaded from, and taught the API to accept requests from private network addresses in dev. One fix removes every future "works on localhost, breaks on the network" surprise.
+
+---
+
+## API error messages could render as "[object Object]" in the UI
+
+**Status:** Fixed 2026-07-15 (found by the new Playwright E2E suite on its first run)
+
+### Symptom
+Signing up or logging in with an email the backend rejects (e.g. `user@localhost`, or any reserved test domain) showed the literal text **"[object Object]"** under the form — no hint of what went wrong. Any form in the app could do this for the same class of response.
+
+### Root Cause
+`errorDetail()` in `frontend-next/lib/api.ts` returned `data.detail` from the response as-is. For most backend errors `detail` is a clean string — but FastAPI's automatic **validation errors (HTTP 422) put an ARRAY of error objects in `detail`** (`[{loc, msg, type}, …]`). The auth routes validate `email: EmailStr`, so an address pydantic rejects never reaches the route's own clean error message; the 422 array flowed into `new Error(...)`, was stringified, and React rendered "[object Object]".
+
+### Fix
+`detailToText()` flattens whatever shape arrives: strings pass through; validation arrays become their joined human `msg`s (e.g. "value is not a valid email address…"); any other object is JSON-stringified; empty/unparseable falls back to the caller's message. Used by the shared `errorDetail()`, so every fetch helper (auth, uploads, checks, ask, suggest) benefits.
+
+### Verification
+- E2E red first: the signup and login specs failed with the page showing `paragraph: "[object Object]"` (Playwright page snapshot). Green after — the suite is 9/9, and the signup spec now permanently asserts the error text never matches `/\[object .*Object\]/`.
+- `tsc --noEmit` + full Playwright suite pass.
+
+### Explain it simply (interview answer)
+When the server rejects a form, it sometimes replies with a structured list of validation problems instead of one sentence. The page assumed "the error is always a sentence" and printed the list object directly, which JavaScript renders as the useless text "[object Object]". I added a small translator that turns whatever the server sends — sentence, list, or object — into readable text, so the user always sees the actual reason.
