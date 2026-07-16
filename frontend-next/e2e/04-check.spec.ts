@@ -56,6 +56,30 @@ test("run check → rows stream → persisted → re-check → history", async (
   await expect(page).toHaveURL(/\/checks\/[0-9a-f-]{16,}/i);
   await expect(page.locator(ROW)).toHaveCount(rowCount, { timeout: 30_000 });
 
+  // "Suggest a fix" on an actionable row (the one real LLM call in this spec —
+  // a single cheap Groq completion; skipped only if the provider throttles).
+  const actionableChip = page
+    .getByRole("button", { name: /^(Gap|Partial|Conflict) \d+$/ })
+    .first();
+  if (await actionableChip.count()) {
+    await actionableChip.click();
+    await page.locator(ROW).first().click();
+    const suggest = page.getByRole("button", { name: "Suggest a fix" });
+    await expect(suggest).toBeVisible();
+    await suggest.click();
+    const draft = page.getByText("Suggested fix · draft");
+    const suggestErr = page.locator("p.st-gap");
+    await expect(draft.or(suggestErr)).toBeVisible({ timeout: 60_000 });
+    if (await suggestErr.count()) {
+      const msg = await suggestErr.first().innerText();
+      test.skip(/rate ?limit|429|quota/i.test(msg), `LLM throttled: ${msg}`);
+      throw new Error(`Suggest a fix failed: ${msg}`);
+    }
+    // Collapse and clear the filter so the re-check assertions see all rows.
+    await page.locator(ROW).first().click();
+    await page.getByRole("button", { name: /^All \d+$/ }).click();
+  }
+
   // Change-tracked re-check: nothing changed in the regulation, so every row
   // carries forward — and the result is saved as a NEW check.
   await page.getByRole("button", { name: "Re-check" }).click();

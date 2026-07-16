@@ -1,0 +1,7 @@
+E2E Synthetic Circular on Customer Verification Standards
+
+Regulated entities shall complete customer identification at onboarding using an Officially Valid Document before opening any account.
+Records of customer identification data and transactions shall be preserved for at least five years after the business relationship ends.
+Every regulated entity shall appoint a Principal Officer responsible for reporting suspicious transactions to the Financial Intelligence Unit.
+Regulated entities shall identify and verify the beneficial owner before establishing a relationship with a legal entity customer.
+Customers shall be assigned a risk category and subjected to periodic KYC updation appropriate to that category.

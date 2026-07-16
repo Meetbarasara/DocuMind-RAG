@@ -38,6 +38,17 @@ export default async function globalTeardown() {
     console.warn(`[e2e teardown] cleanup incomplete: ${e}`);
   }
 
+  // Regulations the regulation-upload spec created (shared table, so they'd
+  // otherwise appear in the real dropdown). PostgREST turns * into a LIKE %.
+  try {
+    await fetch(`${url}/rest/v1/regulations?name=like.${encodeURIComponent("E2E Reg")}*`, {
+      method: "DELETE",
+      headers,
+    });
+  } catch (e) {
+    console.warn(`[e2e teardown] regulation cleanup incomplete: ${e}`);
+  }
+
   try {
     fs.unlinkSync(STATE_FILE);
   } catch {
