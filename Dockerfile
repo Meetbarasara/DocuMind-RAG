@@ -22,7 +22,13 @@ RUN useradd --create-home --uid 1000 documind
 # present for find_packages() to resolve. So strip it here and install it below,
 # after the source lands, with --no-deps (seconds, re-resolves nothing).
 COPY requirements.txt setup.py ./
-RUN sed '/^-e[[:space:]]*\./d' requirements.txt > /tmp/deps.txt \
+# torch is not in requirements.txt — it arrives transitively via
+# sentence-transformers, and pip's default linux wheel bundles ~2GB of NVIDIA
+# CUDA libraries that a CPU-only container never loads. Installing the CPU build
+# first from PyTorch's own index leaves the resolver below with torch already
+# satisfied, so it skips the GPU wheel entirely.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && sed '/^-e[[:space:]]*\./d' requirements.txt > /tmp/deps.txt \
     && pip install --no-cache-dir -r /tmp/deps.txt \
     && rm /tmp/deps.txt
 
