@@ -1375,3 +1375,25 @@ Same design flaw at two more layers: **"couldn't reach / haven't finished asking
 
 ### Explain it simply (interview answer)
 Two more places made the same mistake as the regulations bug, so I fixed the family, not the instance. First: every request re-checks "is this login token valid?" — when that check couldn't reach the auth service for a millisecond, the code answered "the token is bad", and the app logged the user out. Now it retries, and if the service is truly down it says "try again in a moment" — being unreachable is not the same as being wrong. Second: the page showed "You have no regulations" while it was still waiting for the list to arrive. Now it says "Loading…" until it actually knows. The theme across all three fixes: *loading, empty, error, and invalid are four different facts, and a compliance product must never present one as another.*
+
+---
+
+## Sessions silently died after ~1 hour — the frontend never refreshed its token
+
+**Status:** Fixed 2026-07-16 (found by the pre-deploy audit, not by a failing test — the E2E suite's runs are too short to hit it)
+
+### Symptom
+Supabase access tokens expire after ~1 hour. The backend has had `POST /api/auth/refresh` since the session-persistence work — but nothing in the Next.js frontend ever called it. A user who kept a tab open (or came back later the same day with the "remembered" session) stayed visibly signed in while every API call started failing; the only cure was a manual sign-out/sign-in.
+
+### Root Cause
+The refresh endpoint was built for the old Streamlit client and never wired into the new app: `lib/api.ts` had no refresh call, and `SessionProvider` only read localStorage once on mount. Nothing owned token lifetime.
+
+### Fix
+`SessionProvider` now owns it: decode the JWT's `exp` (client-side, no verification needed — it's our own token), and when less than 10 minutes of life remains, exchange the refresh token via the new `api.refreshSession()` and persist the renewed pair. Checked on rehydrate, once a minute, and on window focus — so a tab left open overnight renews the moment you return. A **rejected** refresh (401) signs the user out honestly; a transient failure keeps the session and retries next tick (same loading≠error≠invalid discipline as the backend fixes). Expiry-based gating also means fresh tokens are never churned (Supabase rotates refresh tokens on use, so refreshing on every page load would invalidate the pair mid-session).
+
+### Verification
+- `tsc` clean; full E2E 10/10 (seeded fresh tokens correctly do NOT trigger refresh — no rotation storms); backend refresh endpoint already unit-tested (`tests/test_auth_refresh.py`).
+- The >1h leg is inherently time-based: verified by reasoning + the decode logic being pure; flagged for a manual soak (leave a tab open >1h, confirm calls still succeed).
+
+### Explain it simply (interview answer)
+Login tickets expire after an hour. The app knew how to ask for a new ticket but nobody ever asked — so after an hour you looked logged in while everything quietly failed. Now the app checks the ticket's own printed expiry time and swaps it for a fresh one shortly before it lapses, forever. If the swap is refused (you really are logged out), it says so; if the network just hiccuped, it keeps your session and tries again a minute later.

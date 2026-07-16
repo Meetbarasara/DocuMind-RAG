@@ -185,6 +185,28 @@ export async function login(email: string, password: string): Promise<Session> {
   };
 }
 
+/** Exchange the refresh token for a fresh access+refresh pair. Throws with
+ *  `.status` set so callers can tell "refresh token rejected" (401 → sign the
+ *  user out) from a transient failure (keep the session, retry later). */
+export async function refreshSession(refreshToken: string): Promise<Session> {
+  const res = await fetch(`${API_BASE}/api/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!res.ok) {
+    const err = new Error(await errorDetail(res, `Session refresh failed (HTTP ${res.status}).`)) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    email: data.email,
+  };
+}
+
 export async function signup(email: string, password: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/auth/signup`, {
     method: "POST",
