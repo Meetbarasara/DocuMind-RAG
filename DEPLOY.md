@@ -1,5 +1,9 @@
 # Deploying the KYC Compliance Assistant
 
+> **Deploying to Azure?** See **[DEPLOY_AZURE.md](DEPLOY_AZURE.md)** for a
+> step-by-step Azure Container Apps + GitHub Actions CI/CD walkthrough. This
+> document covers the generic Docker Compose / self-host path.
+
 The stack is two containers, wired by `docker-compose.yml`:
 
 | Service    | Image                          | Port | What it is                          |

@@ -142,3 +142,64 @@ jobs:
           from src.api.router import auth, chat, documents
           print('All API modules imported successfully')
           "
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Continuous deployment to Azure Container Apps. Runs ONLY on a green push to
+  # master (never on PRs), so the lint + test + import gates above must pass
+  # first. Requires a one-time Azure + GitHub setup — see DEPLOY_AZURE.md.
+  #
+  #   Repo secrets (Settings → Secrets):   AZURE_CLIENT_ID, AZURE_TENANT_ID,
+  #                                         AZURE_SUBSCRIPTION_ID   (OIDC login)
+  #   Repo variables (Settings → Variables): AZURE_RESOURCE_GROUP, AZURE_ACR_NAME,
+  #                                           AZURE_API_APP, AZURE_FRONTEND_APP
+  #
+  # If those aren't set, the job no-ops (the `if` guard) instead of failing red.
+  deploy:
+    name: Deploy to Azure
+    runs-on: ubuntu-latest
+    needs: [test, api-import-check]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      vars.AZURE_ACR_NAME != ''
+    permissions:
+      id-token: write      # request the OIDC token for passwordless Azure login
+      contents: read
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      ACR: ${{ vars.AZURE_ACR_NAME }}
+      API_APP: ${{ vars.AZURE_API_APP }}
+      FRONTEND_APP: ${{ vars.AZURE_FRONTEND_APP }}
+      TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC — no stored passwords)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # az acr build compiles the image IN Azure from the Dockerfile — no local
+      # Docker daemon or buildx setup needed on the runner.
+      - name: Build & push the api image
+        run: az acr build -r "$ACR" -t "documind-api:$TAG" -t "documind-api:latest" -f Dockerfile .
+
+      - name: Deploy the api
+        run: az containerapp update -n "$API_APP" -g "$RG" --image "$ACR.azurecr.io/documind-api:$TAG"
+
+      # The frontend bakes NEXT_PUBLIC_API_BASE at BUILD time, so it must be the
+      # api's real public URL. Read it from the just-deployed api app.
+      - name: Resolve the api's public URL
+        run: |
+          FQDN=$(az containerapp show -n "$API_APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "API_BASE=https://$FQDN" >> "$GITHUB_ENV"
+
+      - name: Build & push the frontend image
+        run: az acr build -r "$ACR" -t "documind-frontend:$TAG" -t "documind-frontend:latest" --build-arg "NEXT_PUBLIC_API_BASE=$API_BASE" ./frontend-next
+
+      - name: Deploy the frontend
+        run: az containerapp update -n "$FRONTEND_APP" -g "$RG" --image "$ACR.azurecr.io/documind-frontend:$TAG"
