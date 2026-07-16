@@ -4,6 +4,14 @@
 .git/
 .github/
 
+# Claude Code keeps git worktrees under .claude/worktrees/ — each is a FULL
+# extra copy of this repo (node_modules and all). Nothing here belongs in an
+# image, and leaving it in stalls `az acr build` before it even uploads: it tars
+# the whole tree first. Also note the patterns below are root-anchored, so
+# `venv/` would NOT have caught .claude/worktrees/*/venv — excluding the whole
+# directory is what actually makes them safe.
+.claude/
+
 venv/
 __pycache__/
 *.py[cod]
