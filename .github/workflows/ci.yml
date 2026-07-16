@@ -176,6 +176,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The api image is ~3.6GB and the runner ships with ~25GB of preinstalled
+      # toolchains we never use. Reclaiming them first keeps the build off the
+      # disk-full cliff.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
       - name: Azure login (OIDC — no stored passwords)
         uses: azure/login@v2
         with:
@@ -183,23 +191,51 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # az acr build compiles the image IN Azure from the Dockerfile — no local
-      # Docker daemon or buildx setup needed on the runner.
-      - name: Build & push the api image
-        run: az acr build -r "$ACR" -t "documind-api:$TAG" -t "documind-api:latest" -f Dockerfile .
+      # NOT `az acr build`: ACR Tasks is blocked on this subscription
+      # (TasksOperationsNotAllowed — Azure disables cloud builds on free/new
+      # subscriptions). So the runner builds with its own Docker daemon and
+      # pushes. `az acr login` mints a registry token from the OIDC login above,
+      # so there is still no stored password. Contributor on the resource group
+      # covers ACR push.
+      - name: Authenticate Docker to the registry
+        run: az acr login -n "$ACR"
 
-      - name: Deploy the api
-        run: az containerapp update -n "$API_APP" -g "$RG" --image "$ACR.azurecr.io/documind-api:$TAG"
-
-      # The frontend bakes NEXT_PUBLIC_API_BASE at BUILD time, so it must be the
-      # api's real public URL. Read it from the just-deployed api app.
+      # The frontend inlines NEXT_PUBLIC_API_BASE into its CLIENT bundle at BUILD
+      # time — it cannot be changed at runtime, so the api's real URL must be
+      # known here. Resolved before either build: the api app already exists and
+      # its FQDN is stable across revisions, so there's no need to deploy first.
       - name: Resolve the api's public URL
         run: |
           FQDN=$(az containerapp show -n "$API_APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$FQDN" || { echo "::error::api app '$API_APP' has no ingress FQDN — is it created?"; exit 1; }
           echo "API_BASE=https://$FQDN" >> "$GITHUB_ENV"
 
+      - name: Build & push the api image
+        run: |
+          docker build -t "$ACR.azurecr.io/documind-api:$TAG" -t "$ACR.azurecr.io/documind-api:latest" -f Dockerfile .
+          docker push "$ACR.azurecr.io/documind-api:$TAG"
+          docker push "$ACR.azurecr.io/documind-api:latest"
+
       - name: Build & push the frontend image
-        run: az acr build -r "$ACR" -t "documind-frontend:$TAG" -t "documind-frontend:latest" --build-arg "NEXT_PUBLIC_API_BASE=$API_BASE" ./frontend-next
+        run: |
+          docker build -t "$ACR.azurecr.io/documind-frontend:$TAG" -t "$ACR.azurecr.io/documind-frontend:latest" \
+            --build-arg "NEXT_PUBLIC_API_BASE=$API_BASE" ./frontend-next
+          docker push "$ACR.azurecr.io/documind-frontend:$TAG"
+          docker push "$ACR.azurecr.io/documind-frontend:latest"
+
+      # Both images are pushed before either app is updated, so a build failure
+      # can't leave the api on the new revision and the frontend on the old one.
+      - name: Deploy the api
+        run: az containerapp update -n "$API_APP" -g "$RG" --image "$ACR.azurecr.io/documind-api:$TAG"
 
       - name: Deploy the frontend
         run: az containerapp update -n "$FRONTEND_APP" -g "$RG" --image "$ACR.azurecr.io/documind-frontend:$TAG"
+
+      - name: Verify the api came back healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 10 "$API_BASE/health"; then echo "  <- api healthy"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::api did not return healthy within 5 minutes of deploy"
+          exit 1
