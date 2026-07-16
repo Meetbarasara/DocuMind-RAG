@@ -23,5 +23,13 @@ docs/
 data/
 scripts/
 
+# Node build artifacts. The api image never reads frontend-next/, and the
+# frontend builds from its own context (./frontend-next) with its own
+# .dockerignore — so these are pure upload cost here. A fresh clone doesn't have
+# them, but a working checkout does: ~50k files tarred and shipped to the ACR
+# build agent for nothing. `**/` because .dockerignore patterns are root-anchored.
+**/node_modules/
+**/.next/
+
 .DS_Store
 .vscode/
