@@ -76,11 +76,11 @@ export default function Dashboard() {
         <Onboarding loading={loading} hasPolicy={docs.length > 0} hasReg={regs.length > 0} />
       )}
 
-      {/* Quick stats */}
+      {/* Quick stats — "…" while loading; a 0 must mean a real zero. */}
       <div className="grid grid-cols-3 gap-3">
-        <StatTile href="/policies" label="Policies" value={docs.length} />
-        <StatTile href="/regulations" label="Regulations" value={regs.length} />
-        <StatTile href="/checks" label="Checks" value={checks.length} />
+        <StatTile href="/policies" label="Policies" value={loading ? "…" : docs.length} />
+        <StatTile href="/regulations" label="Regulations" value={loading ? "…" : regs.length} />
+        <StatTile href="/checks" label="Checks" value={loading ? "…" : checks.length} />
       </div>
 
       {/* Primary CTA */}
@@ -146,7 +146,7 @@ export default function Dashboard() {
   );
 }
 
-function StatTile({ href, label, value }: { href: string; label: string; value: number }) {
+function StatTile({ href, label, value }: { href: string; label: string; value: number | string }) {
   return (
     <Link
       href={href}

@@ -24,6 +24,7 @@ export default function NewCheck() {
   const [regsLoading, setRegsLoading] = useState(true);
   const [regId, setRegId] = useState("");
   const [docs, setDocs] = useState<DocInfo[]>([]);
+  const [docsLoading, setDocsLoading] = useState(true);
   const [liveError, setLiveError] = useState<string | null>(null);
 
   const stream = useCheckStream();
@@ -42,7 +43,8 @@ export default function NewCheck() {
       .finally(() => alive && setRegsLoading(false));
     listDocuments(token)
       .then((d) => alive && setDocs(d))
-      .catch(() => {/* non-fatal */});
+      .catch(() => {/* non-fatal */})
+      .finally(() => alive && setDocsLoading(false));
     return () => {
       alive = false;
     };
@@ -62,7 +64,10 @@ export default function NewCheck() {
   if (!token) return null;
 
   const running = stream.phase === "running";
-  const canRun = !running && !!regId;
+  // Checking an empty policy namespace "works" but marks every requirement a
+  // Gap — block it and say why, rather than produce a misleading table.
+  const noPolicy = !docsLoading && docs.length === 0;
+  const canRun = !running && !!regId && !noPolicy;
   const label = running
     ? stream.total
       ? `Checking… ${stream.rows.length}/${stream.total}`
@@ -115,6 +120,12 @@ export default function NewCheck() {
             Your policy
           </label>
           <PolicyUpload token={token} docs={docs} onChanged={reloadDocs} />
+          {noPolicy && (
+            <p className="mt-2 text-xs text-[var(--muted)]">
+              Upload your policy first — checking an empty policy would mark
+              every requirement as a Gap.
+            </p>
+          )}
         </div>
       </div>
 

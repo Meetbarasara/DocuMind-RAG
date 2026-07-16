@@ -10,6 +10,9 @@ export default function PoliciesPanel() {
   const { session } = useSession();
   const token = session?.accessToken;
   const [docs, setDocs] = useState<DocInfo[]>([]);
+  // Loading and load-failure each get their own honest rendering — a silent
+  // catch here used to present both as "0 documents".
+  const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +21,8 @@ export default function PoliciesPanel() {
     let alive = true;
     listDocuments(token)
       .then((d) => alive && setDocs(d))
-      .catch(() => {/* non-fatal */});
+      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
@@ -60,7 +64,7 @@ export default function PoliciesPanel() {
             Your policies
           </h2>
           <span className="text-xs tabular-nums text-[var(--muted)]">
-            {docs.length} document{docs.length === 1 ? "" : "s"}
+            {loading ? "…" : `${docs.length} document${docs.length === 1 ? "" : "s"}`}
           </span>
         </div>
         <PolicyUpload
@@ -70,7 +74,7 @@ export default function PoliciesPanel() {
           onDelete={onDelete}
           deleting={deleting}
         />
-        {docs.length === 0 && (
+        {!loading && docs.length === 0 && (
           <p className="text-sm italic text-[var(--muted)]">
             Upload your KYC policy to check it against a regulation.
           </p>
