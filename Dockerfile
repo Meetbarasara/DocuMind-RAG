@@ -10,13 +10,21 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# requirements.txt's `-e .` (editable install) needs setup.py + the real
-# package source already present to resolve, so there's no dependency-only
-# layer to cache separately here — copy everything up front, then install.
-COPY requirements.txt setup.py ./
-COPY src/ ./src/
+# Non-root user (Part C hardening). Created up here so the model bake below can
+# chown in its own layer — a late `chown -R` over /opt/hf would duplicate all
+# 420MB into a new layer on every rebuild.
+RUN useradd --create-home --uid 1000 documind
 
-RUN pip install --no-cache-dir -r requirements.txt
+# LAYER ORDER IS LOAD-BEARING: nothing above `COPY src/` may depend on src/, so
+# a code-only change reuses the deps + model layers instead of re-downloading
+# ~2GB of wheels and the 420MB model on every bug fix. requirements.txt's `-e .`
+# is the reason this is not just "copy requirements, install": it needs src/
+# present for find_packages() to resolve. So strip it here and install it below,
+# after the source lands, with --no-deps (seconds, re-resolves nothing).
+COPY requirements.txt setup.py ./
+RUN sed '/^-e[[:space:]]*\./d' requirements.txt > /tmp/deps.txt \
+    && pip install --no-cache-dir -r /tmp/deps.txt \
+    && rm /tmp/deps.txt
 
 # Bake the local embedding model (~420MB) into the image so the container never
 # downloads it from huggingface.co at startup. Without this, every cold start /
@@ -25,14 +33,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # non-root runtime user can read; load_local_embeddings() reads it offline-first
 # (local_files_only) and degrades to a runtime download only if it's ever absent.
 ENV HF_HOME=/opt/hf
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-mpnet-base-v2')"
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-mpnet-base-v2')" \
+    && chown -R documind:documind /opt/hf
 
-# Non-root user (Part C hardening). The app creates its own runtime
-# directories on demand (tmp_uploads/ for in-flight uploads, logs/ for the
-# rotating file handler) via mkdir(exist_ok=True) — owning /app is enough for
-# documind to create them lazily, no need to pre-create or volume-mount them.
-RUN useradd --create-home --uid 1000 documind \
-    && chown -R documind:documind /app /opt/hf
+# ── Everything below rebuilds on any code change — keep it cheap. ────────────
+# The app creates its own runtime directories on demand (tmp_uploads/ for
+# in-flight uploads, logs/ for the rotating file handler) via mkdir(exist_ok=True)
+# — owning /app is enough for documind to create them lazily, no need to
+# pre-create or volume-mount them.
+COPY src/ ./src/
+RUN pip install --no-cache-dir --no-deps -e . \
+    && chown -R documind:documind /app
 USER documind
 
 EXPOSE 8000
