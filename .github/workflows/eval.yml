@@ -1,18 +1,26 @@
 name: Eval (nightly regression gate)
 
-# RAG eval is costly (real Groq + Pinecone + RAGAS calls), so it runs on a
-# schedule / on demand — NOT on every push or PR. The gate fails the run if a
-# metric drops past tolerance vs the committed baseline.
+# Two independent quality gates, each failing the run if a metric drops past
+# tolerance vs its committed baseline:
+#
+#   1. rag-eval        — retrieval + RAGAS generation quality (the RAG engine)
+#   2. compliance-eval — the KYC gap-analysis judge (the product)
+#
+# Both make real LLM calls, so they run on a schedule / on demand — NOT on every
+# push or PR. They are separate jobs so one gate failing still reports the other.
 #
 # The RAGAS judge LLM is wired to Groq and embeddings run locally (see
 # evalution.py), so the eval runs on GROQ_API_KEY — no OpenAI/Gemini key needed.
 #
 # Prerequisites (set once):
 #   1. Repo secrets: GROQ_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME,
-#      and (optional) COHERE_API_KEY.
-#   2. A reference baseline: run `python -m scripts.run_eval` locally with a good
-#      config, then commit its data/eval/baseline.json as
-#      data/eval/baseline.committed.json. Until that exists, the gate is skipped.
+#      CEREBRAS_API_KEY (the compliance judge), and (optional) COHERE_API_KEY.
+#      Each gate no-ops rather than failing red until its key is set.
+#   2. Reference baselines: run `python -m scripts.run_eval` and
+#      `python -m scripts.run_compliance_eval` locally with a good config, then
+#      commit data/eval/baseline.json as baseline.committed.json and
+#      data/eval/compliance_baseline.json as compliance_baseline.committed.json.
+#      Until each exists, that gate is skipped by the script itself.
 
 on:
   workflow_dispatch: {}        # run manually from the Actions tab
@@ -20,7 +28,7 @@ on:
     - cron: "0 6 * * *"        # 06:00 UTC nightly
 
 jobs:
-  eval:
+  rag-eval:
     name: RAG eval regression gate
     runs-on: ubuntu-latest
     env:
@@ -50,4 +58,60 @@ jobs:
         with:
           name: eval-baseline
           path: data/eval/baseline.json
+          if-no-files-found: ignore
+
+  compliance-eval:
+    name: Compliance judge regression gate
+    runs-on: ubuntu-latest
+    env:
+      # The ONLY key this gate really needs: run_compliance_eval is judge-only
+      # (the gold set hands the policy excerpt straight to the judge), so it
+      # never touches Pinecone, Supabase or the embedding model.
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      # Config() fail-fast-validates every required secret at construction, and
+      # constructing it is unavoidable here. These are deliberately inert: the
+      # job gets no real access to services it does not use, and the values
+      # document that fact. If this eval ever starts retrieving, these become
+      # real secrets and this comment is the reason why.
+      GROQ_API_KEY: unused-by-the-compliance-gate
+      PINECONE_API_KEY: unused-by-the-compliance-gate
+      SUPABASE_URL: unused-by-the-compliance-gate
+      SUPABASE_ANON_KEY: unused-by-the-compliance-gate
+      SUPABASE_SERVICE_ROLE_KEY: unused-by-the-compliance-gate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      # No key => skip rather than fail. A gate that goes red before it is even
+      # configured trains people to ignore red, which costs more than the gate
+      # buys. Same pattern as ci.yml's deploy job.
+      - name: Check the judge key is configured
+        id: guard
+        run: |
+          if [ -z "$CEREBRAS_API_KEY" ]; then
+            echo "::notice::CEREBRAS_API_KEY is not set — skipping the compliance gate."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run compliance eval + regression gate
+        if: steps.guard.outputs.run == 'true'
+        run: python -m scripts.run_compliance_eval --check
+
+      - name: Upload compliance eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-baseline
+          path: data/eval/compliance_baseline.json
           if-no-files-found: ignore
